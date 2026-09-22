@@ -97,13 +97,8 @@ LOCATIONS_CSV_URL = (
 # How wide an area (in degrees) to capture around each farm's point for
 # the background snapshot -- small enough to stay zoomed in on the farm,
 # large enough that panning/precision differences still land inside frame.
-MAP_BBOX_SPAN_DEG = 0.005
-MAP_IMAGE_WIDTH = 900
-MAP_IMAGE_HEIGHT = 600
-MAP_IMAGE_SIZE = f"{MAP_IMAGE_WIDTH},{MAP_IMAGE_HEIGHT}"
-# Extra padding (in degrees) added around a farm's own polygon boundary so
-# the outline isn't cropped flush against the image edge.
-MAP_POLYGON_PADDING_DEG = 0.002
+MAP_BBOX_SPAN_DEG = 0.008
+MAP_IMAGE_SIZE = "900,600"
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
 st.subheader("🎡 Running Farms — Live Display")
@@ -207,21 +202,17 @@ def parse_location(location):
     Parses the Locations sheet's Location cell in either of two formats:
       - "lat, lon"                                    -> plain point
       - "Polygon ((lon lat, lon lat, ...))"            -> WKT polygon ring
-    Returns (lat, lon, polygon):
-      - lat, lon: the point, or the polygon's centroid, to center the
-        snapshot on -- or (None, None) if the value can't be parsed.
-      - polygon: list of (lat, lon) tuples for the ring, if the value was
-        a WKT polygon; otherwise None. Used to zoom tight to the farm's
-        actual boundary and to draw its outline on the snapshot.
+    Returns (lat, lon) -- the point, or the polygon's centroid -- or
+    (None, None) if the value can't be parsed at all.
     """
     if not isinstance(location, str):
-        return None, None, None
+        return None, None
     location = location.strip()
 
     if location.lower().startswith("polygon"):
         coords_match = re.search(r"\(\(([^)]+)\)\)", location)
         if not coords_match:
-            return None, None, None
+            return None, None
         points = []
         for pair in coords_match.group(1).split(","):
             parts = pair.strip().split()
@@ -233,19 +224,19 @@ def parse_location(location):
             except ValueError:
                 continue
         if not points:
-            return None, None, None
+            return None, None
         avg_lat = sum(p[0] for p in points) / len(points)
         avg_lon = sum(p[1] for p in points) / len(points)
-        return avg_lat, avg_lon, points
+        return avg_lat, avg_lon
 
     match = re.match(r"\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*", location)
     if not match:
-        return None, None, None
-    return float(match.group(1)), float(match.group(2)), None
+        return None, None
+    return float(match.group(1)), float(match.group(2))
 
 def build_farm_location_lookup():
-    """Returns {customer_id_code (upper): (lat, lon, polygon_or_None)},
-    built once per (cached) Locations sheet load."""
+    """Returns {customer_id_code (upper): (lat, lon)}, built once per
+    (cached) Locations sheet load."""
     loc_df = load_farm_locations()
     lookup = {}
     if loc_df.empty or "Location" not in loc_df.columns or "Customer ID" not in loc_df.columns:
@@ -254,48 +245,22 @@ def build_farm_location_lookup():
         code = str(row.get("Customer ID", "")).strip().upper()
         if not code:
             continue
-        lat, lon, polygon = parse_location(row.get("Location", ""))
+        lat, lon = parse_location(row.get("Location", ""))
         if lat is not None and lon is not None:
-            lookup[code] = (lat, lon, polygon)
+            lookup[code] = (lat, lon)
     return lookup
 
-def build_map_image_url(lat, lon, polygon=None):
+def build_map_image_url(lat, lon):
     """A single static satellite snapshot (no Leaflet/JS map needed) via
-    ArcGIS's MapServer 'export' endpoint. Used as a plain <img> so it can
-    be styled with a CSS filter client-side.
-
-    When a farm has an actual polygon boundary, the snapshot is zoomed to
-    that polygon's own bounding box (plus a little padding) instead of a
-    fixed-size box around its centroid -- so a large farm doesn't get
-    cropped and a small one doesn't drown in unrelated surroundings.
-    Falls back to the fixed MAP_BBOX_SPAN_DEG box for plain point
-    locations. Returns (image_url, bbox) where bbox is
-    (min_lon, min_lat, max_lon, max_lat), needed later to draw the
-    polygon outline in the exact right place on top of the image.
-    """
-    if polygon:
-        lats = [p[0] for p in polygon]
-        lons = [p[1] for p in polygon]
-        lat_span = max(lats) - min(lats)
-        lon_span = max(lons) - min(lons)
-        # Pad generously (40% of the shape's own extent on each side, with
-        # a floor for tiny/thin polygons) so the boundary sits comfortably
-        # inside the frame with breathing room, instead of touching --
-        # or nearly filling -- the image edges.
-        pad_lat = max(lat_span * 0.9, MAP_POLYGON_PADDING_DEG)
-        pad_lon = max(lon_span * 0.9, MAP_POLYGON_PADDING_DEG)
-        min_lat, max_lat = min(lats) - pad_lat, max(lats) + pad_lat
-        min_lon, max_lon = min(lons) - pad_lon, max(lons) + pad_lon
-    else:
-        min_lon, max_lon = lon - MAP_BBOX_SPAN_DEG, lon + MAP_BBOX_SPAN_DEG
-        min_lat, max_lat = lat - MAP_BBOX_SPAN_DEG, lat + MAP_BBOX_SPAN_DEG
-
-    url = (
+    ArcGIS's MapServer 'export' endpoint, centered on (lat, lon). Used
+    as a plain <img> so it can be blurred with a CSS filter client-side."""
+    min_lon, max_lon = lon - MAP_BBOX_SPAN_DEG, lon + MAP_BBOX_SPAN_DEG
+    min_lat, max_lat = lat - MAP_BBOX_SPAN_DEG, lat + MAP_BBOX_SPAN_DEG
+    return (
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
         f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}&bboxSR=4326&size={MAP_IMAGE_SIZE}"
         "&format=png32&transparent=false&f=image"
     )
-    return url, (min_lon, min_lat, max_lon, max_lat)
 
 # =========================================================================
 # HELPERS -- ported from the Marketing Manager / full manager app's Pond
@@ -446,19 +411,13 @@ def build_running_farms(df):
         # NEW -- resolve this farm's map background image, if a matching
         # location exists. Failure here (no code, no match, bad coords)
         # just leaves map_image empty and the slide falls back to the
-        # existing zone-tint-only background. When the location is a
-        # polygon, also keep the polygon points + the exact bbox used for
-        # the snapshot so the JS side can draw the boundary outline in
-        # the right spot on top of the image.
+        # existing zone-tint-only background.
         code = code_lookup.get((customer, farm), "")
-        map_image, map_bbox, map_polygon = "", None, None
+        map_image = ""
         if code:
-            loc = farm_location_lookup.get(code.upper())
-            if loc:
-                lat, lon, polygon = loc
-                map_image, bbox = build_map_image_url(lat, lon, polygon)
-                map_bbox = list(bbox)
-                map_polygon = [[p[0], p[1]] for p in polygon] if polygon else None
+            latlon = farm_location_lookup.get(code.upper())
+            if latlon:
+                map_image = build_map_image_url(latlon[0], latlon[1])
 
         farms.append({
             "customer": str(customer),
@@ -467,8 +426,6 @@ def build_running_farms(df):
             "zone_color": zone_colors.get(zone, "#2563eb"),
             "ponds": ponds,
             "map_image": map_image,
-            "map_bbox": map_bbox,
-            "map_polygon": map_polygon,
         })
 
     farms.sort(key=lambda f: (f["zone"], f["customer"], f["farm"]))
@@ -600,7 +557,7 @@ _HTML_TEMPLATE = """
        original zone-tint-only look untouched. */
     .kmn-slide-mapbg {
       position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
-      object-fit: cover; filter: brightness(.85) saturate(1.15);
+      object-fit: cover; filter: blur(10px) brightness(.55) saturate(1.15);
       z-index: 0;
     }
     /* ---- NEW: the existing zone-colored gradient, now drawn as its own
@@ -608,13 +565,6 @@ _HTML_TEMPLATE = """
        slide), so the map shows through exactly the same way the old
        dark radial background used to. */
     .kmn-slide-tint { position: absolute; inset: 0; z-index: 1; }
-    /* ---- NEW: draws the farm's actual boundary (or a marker dot for a
-       plain point location) directly on top of the satellite snapshot,
-       so the farm itself is unmistakable regardless of blur/zoom. Sits
-       above the image, below the zone tint (so the tint's color still
-       comes through), aligned pixel-for-pixel with the image via a
-       matching viewBox + inset. */
-    .kmn-slide-map-outline { position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px); z-index: 0; }
     /* ---- NEW: wraps the farm header + pond grid so it always sits
        above both background layers. */
     .kmn-slide-content {
@@ -771,35 +721,8 @@ _HTML_TEMPLATE = """
             ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
             : '';
 
-          // NEW: draw the farm's real boundary (or a marker dot for a
-          // plain point) on top of the snapshot, in image pixel-space, so
-          // it lines up exactly regardless of zoom. viewBox matches the
-          // exported image's own width/height.
-          let mapOutlineHtml = '';
-          if (f.map_image && f.map_bbox) {
-            const minLon = f.map_bbox[0], minLat = f.map_bbox[1], maxLon = f.map_bbox[2], maxLat = f.map_bbox[3];
-            const lonSpan = (maxLon - minLon) || 1;
-            const latSpan = (maxLat - minLat) || 1;
-            const toX = function (lon) { return ((lon - minLon) / lonSpan) * __MAP_IMAGE_WIDTH__; };
-            const toY = function (lat) { return ((maxLat - lat) / latSpan) * __MAP_IMAGE_HEIGHT__; };
-            if (f.map_polygon && f.map_polygon.length > 2) {
-              const pts = f.map_polygon.map(function (p) { return toX(p[1]) + ',' + toY(p[0]); }).join(' ');
-              mapOutlineHtml =
-                '<svg class="kmn-slide-map-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
-                + '<polygon points="' + pts + '" fill="rgba(250,204,21,.12)" stroke="#facc15" stroke-width="6" stroke-linejoin="round" />'
-                + '</svg>';
-            } else {
-              const cx = __MAP_IMAGE_WIDTH__ / 2, cy = __MAP_IMAGE_HEIGHT__ / 2;
-              mapOutlineHtml =
-                '<svg class="kmn-slide-map-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
-                + '<circle cx="' + cx + '" cy="' + cy + '" r="16" fill="rgba(250,204,21,.25)" stroke="#facc15" stroke-width="5" />'
-                + '</svg>';
-            }
-          }
-
           return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
             + mapBgHtml
-            + mapOutlineHtml
             + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
             + '<div class="kmn-slide-content">'
             + '<div class="kmn-slide-header">'
@@ -963,8 +886,6 @@ _html = (
     .replace("__CAROUSEL_SECONDS__", json.dumps(CAROUSEL_SECONDS))
     .replace("__HARVEST_UPDATE_SECONDS__", json.dumps(HARVEST_UPDATE_SECONDS))
     .replace("__DATA_REFRESH_SECONDS__", json.dumps(DATA_REFRESH_SECONDS))
-    .replace("__MAP_IMAGE_WIDTH__", str(MAP_IMAGE_WIDTH))
-    .replace("__MAP_IMAGE_HEIGHT__", str(MAP_IMAGE_HEIGHT))
 )
 
 components.html(_html, height=680, scrolling=False)
