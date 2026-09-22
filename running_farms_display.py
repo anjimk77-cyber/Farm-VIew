@@ -481,10 +481,10 @@ _HTML_TEMPLATE = """
       display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-carousel {
-      width: 100%; max-width: 1200px; height: min(76vh, 700px);
+      width: 100%; max-width: 1600px; height: min(76vh, 700px);
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-harvest-panel {
-      width: 100%; max-width: 1200px;
+      width: 100%; max-width: 1600px;
     }
   </style>
 
