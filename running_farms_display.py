@@ -477,14 +477,20 @@ _HTML_TEMPLATE = """
        Updates panel centered in the middle of the page. */
     #kmn-wrap.kmn-fullscreen-mode {
       position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 999999;
-      background: #0b1220; padding: 10px; box-sizing: border-box;
+      background: #0b1220; padding: 24px; box-sizing: border-box;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-carousel {
-      width: 100%; max-width: 1600px; height: min(85vh, 900px);
+      width: 100%; max-width: 1200px; height: min(76vh, 700px);
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-harvest-panel {
-     width: 100%; max-width: 1600px;
+      width: 100%; max-width: 1200px;
+    }
+    /* Centers each slide's content (zone badge, farm name, pond grid)
+       vertically in the middle of the carousel while in Full Screen,
+       instead of pinning it to the top. */
+    #kmn-wrap.kmn-fullscreen-mode .kmn-slide {
+      justify-content: center;
     }
   </style>
 
