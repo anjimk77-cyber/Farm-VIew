@@ -64,8 +64,8 @@ COLUMN_ORDER = [
 
 # ---- Display timing (seconds) -- tweak these to taste.
 CAROUSEL_SECONDS = 4          # how long each farm's Pond Layout slide stays on screen
-HARVEST_UPDATE_SECONDS = 4    # how long each Harvest Updates item stays on screen
-DATA_REFRESH_SECONDS = 300    # how often the whole page reloads to pull fresh sheet data
+HARVEST_UPDATE_SECONDS = 5    # how long each Harvest Updates item stays on screen
+DATA_REFRESH_SECONDS = 2000    # how often the whole page reloads to pull fresh sheet data
 
 # ---- Zone color palette -- cycles if there are more zones than colors.
 ZONE_PALETTE = [
