@@ -671,6 +671,15 @@ _HTML_TEMPLATE = """
     .kmn-pond-wq-caption {
       font-size: .65rem; color: #fbbf24; text-align: center; margin-top: 3px; line-height: 1.2;
     }
+    /* ---- NEW: small, sharp "exact location" thumbnail shown after the
+       Pond Layout grid -- distinct from the dimmed full-slide background
+       image above, which stays exactly as it was. */
+    .kmn-location-thumb-wrap { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
+    .kmn-location-thumb {
+      width: 220px; height: 150px; object-fit: cover; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,.35); box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    }
+    .kmn-location-caption { margin-top: 5px; font-size: .75rem; color: #e2e8f0; font-weight: 600; }
     .kmn-empty { color: #94a3b8; font-size: 1.2rem; margin-top: 60px; text-align: center; }
     .kmn-dots { position: absolute; bottom: 14px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; }
     .kmn-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .3s; }
@@ -818,6 +827,16 @@ _HTML_TEMPLATE = """
             ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
             : '';
 
+          // NEW: a small, sharp "exact location" thumbnail shown after the
+          // Pond Layout grid -- separate from the dimmed full-slide
+          // background above, and only added when a location was found.
+          const locationThumbHtml = f.map_image
+            ? '<div class="kmn-location-thumb-wrap">'
+              + '<img class="kmn-location-thumb" src="' + f.map_image + '" alt="Farm location" onerror="this.parentElement.remove();" />'
+              + '<div class="kmn-location-caption">📍 Farm Location</div>'
+              + '</div>'
+            : '';
+
           return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
             + mapBgHtml
             + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
@@ -828,6 +847,7 @@ _HTML_TEMPLATE = """
             + '<div class="kmn-customer-name">' + escapeHtml(f.customer) + '</div>'
             + '</div>'
             + '<div class="kmn-pond-grid">' + ponds + '</div>'
+            + locationThumbHtml
             + '</div>'
             + '</div>';
         }).join('');
