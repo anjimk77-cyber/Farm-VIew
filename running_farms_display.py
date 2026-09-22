@@ -628,13 +628,6 @@ _HTML_TEMPLATE = """
        slide), so the map shows through exactly the same way the old
        dark radial background used to. */
     .kmn-slide-tint { position: absolute; inset: 0; z-index: 1; }
-    /* ---- NEW: draws the farm's actual boundary (or a marker dot for a
-       plain point location) directly on top of the satellite snapshot,
-       so the farm itself is unmistakable regardless of blur/zoom. Sits
-       above the image, below the zone tint (so the tint's color still
-       comes through), aligned pixel-for-pixel with the image via a
-       matching viewBox + inset. */
-    .kmn-slide-map-outline { position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px); z-index: 0; }
     /* ---- NEW: wraps the farm header + pond grid so it always sits
        above both background layers. */
     .kmn-slide-content {
@@ -825,35 +818,8 @@ _HTML_TEMPLATE = """
             ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
             : '';
 
-          // NEW: draw the farm's real boundary (or a marker dot for a
-          // plain point) on top of the snapshot, in image pixel-space, so
-          // it lines up exactly regardless of zoom. viewBox matches the
-          // exported image's own width/height.
-          let mapOutlineHtml = '';
-          if (f.map_image && f.map_bbox) {
-            const minLon = f.map_bbox[0], minLat = f.map_bbox[1], maxLon = f.map_bbox[2], maxLat = f.map_bbox[3];
-            const lonSpan = (maxLon - minLon) || 1;
-            const latSpan = (maxLat - minLat) || 1;
-            const toX = function (lon) { return ((lon - minLon) / lonSpan) * __MAP_IMAGE_WIDTH__; };
-            const toY = function (lat) { return ((maxLat - lat) / latSpan) * __MAP_IMAGE_HEIGHT__; };
-            if (f.map_polygon && f.map_polygon.length > 2) {
-              const pts = f.map_polygon.map(function (p) { return toX(p[1]) + ',' + toY(p[0]); }).join(' ');
-              mapOutlineHtml =
-                '<svg class="kmn-slide-map-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
-                + '<polygon points="' + pts + '" fill="rgba(250,204,21,.12)" stroke="#facc15" stroke-width="6" stroke-linejoin="round" />'
-                + '</svg>';
-            } else {
-              const cx = __MAP_IMAGE_WIDTH__ / 2, cy = __MAP_IMAGE_HEIGHT__ / 2;
-              mapOutlineHtml =
-                '<svg class="kmn-slide-map-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
-                + '<circle cx="' + cx + '" cy="' + cy + '" r="16" fill="rgba(250,204,21,.25)" stroke="#facc15" stroke-width="5" />'
-                + '</svg>';
-            }
-          }
-
           return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
             + mapBgHtml
-            + mapOutlineHtml
             + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
             + '<div class="kmn-slide-content">'
             + '<div class="kmn-slide-header">'
