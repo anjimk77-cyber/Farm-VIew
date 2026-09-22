@@ -44,11 +44,19 @@ from google.oauth2.service_account import Credentials
 #      the entire browser window -- while in Full Screen, the Pond
 #      Layout carousel and the Harvest Updates panel are centered in the
 #      middle of the page.
+#   5) NEW: a "Zone wise Running Farms - Live Display" section (below
+#      the carousel + Harvest Updates panel) -- a plain, non-rotating
+#      table, grouped by Zone, listing every currently Running farm with
+#      its Vannamei Ponds and Monodon Ponds laid out side by side, each
+#      pond box using the same status colors, DOC Today values, Issues
+#      and WQ Special Cases shown elsewhere in this app family.
 #
 # All of the carousel/rotation/full-screen behaviour runs client-side in
 # a single self-contained HTML/CSS/JS component
 # (streamlit.components.v1.html) -- Python only computes the data once
-# per page load/refresh.
+# per page load/refresh. The NEW Zone wise section below it is plain
+# server-rendered HTML (st.markdown), not part of that component, since
+# it doesn't rotate or animate.
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
 
@@ -489,6 +497,97 @@ def build_running_farms(df):
             "map_image": map_image,
             "map_bbox": map_bbox,
             "map_polygon": map_polygon,
+        })
+
+    farms.sort(key=lambda f: (f["zone"], f["customer"], f["farm"]))
+    return farms
+
+# =========================================================================
+# NEW -- BUILD "ZONE WISE RUNNING FARMS" DATA (for the plain table section
+# below the carousel + Harvest Updates panel).
+#
+# Same "Running" rule as build_running_farms() above (a farm qualifies
+# when NOT every pond it has a saved record for is at Full Harvest), but
+# instead of one combined Pond Layout per farm, each farm's latest-per-
+# pond records are split into a Vannamei Ponds list and a Monodon Ponds
+# list (by Species Culture), so the table below can show them side by
+# side. Each pond keeps the same status/color, DOC Today, Issues and WQ
+# Special Cases fields used across this app family (ported from the
+# Marketing Manager app's Pond Layout cards).
+# =========================================================================
+def build_zone_wise_running_farms(df):
+    required = {"Customer", "Farm Name with Code", "Pond Number", "Date", "Harvest Type", "Harvest Type 2"}
+    if len(df) == 0 or not required.issubset(df.columns):
+        return []
+
+    work = df.copy()
+    work["_ParsedDate"] = pd.to_datetime(work["Date"], errors="coerce")
+    latest_per_pond = (
+        work.dropna(subset=["_ParsedDate"])
+        .sort_values("_ParsedDate")
+        .groupby(["Customer", "Farm Name with Code", "Pond Number"], as_index=False)
+        .last()
+    )
+    if len(latest_per_pond) == 0:
+        return []
+
+    partial_history = (
+        work.assign(_HasPartial=(
+            work.get("Harvest Type", pd.Series("", index=work.index)).astype(str).str.lower().str.contains("partial")
+            | work.get("Harvest Type 2", pd.Series("", index=work.index)).astype(str).str.lower().str.contains("partial")
+        ))
+        .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HasPartial"]
+        .any()
+    )
+
+    latest_per_pond["_HasPartial"] = latest_per_pond.apply(
+        lambda r: bool(partial_history.get((r["Customer"], r["Farm Name with Code"], r["Pond Number"]), False)),
+        axis=1,
+    )
+    latest_per_pond["_Status"] = latest_per_pond.apply(lambda r: _pond_status(r, r["_HasPartial"]), axis=1)
+    latest_per_pond["_DocToday"] = latest_per_pond.apply(_doc_today, axis=1)
+
+    farms = []
+    for (customer, farm), group in latest_per_pond.groupby(["Customer", "Farm Name with Code"]):
+        total_ponds = group["Pond Number"].nunique()
+        full_h_ponds = (group["_Status"] == "Full H").sum()
+        if total_ponds > 0 and full_h_ponds >= total_ponds:
+            continue  # every pond on this farm is Full H -- not "Running"
+
+        zone = _farm_zone(customer, farm)
+        vannamei_ponds, monodon_ponds = [], []
+        for _, prow in group.sort_values("Pond Number").iterrows():
+            status = prow["_Status"]
+            doc_val = prow["_DocToday"]
+            if status == "Full H":
+                display = "H"
+            elif status == "Soon to be":
+                display = "-"
+            else:
+                display = str(doc_val) if doc_val is not None else "-"
+            pond = {
+                "pond_no": str(prow.get("Pond Number", "")),
+                "status": status,
+                "display": display,
+                "color": _pond_color(status),
+                "issues": str(prow.get("Issues", "")).strip(),
+                "wq_special": str(prow.get("WQ Special Cases", "")).strip(),
+            }
+            species = _species_letter(prow.get("Species Culture", ""))
+            if species == "V":
+                vannamei_ponds.append(pond)
+            elif species == "M":
+                monodon_ponds.append(pond)
+            # Ponds whose Species Culture is neither Vannamei nor Monodon
+            # (blank/unrecognized) simply aren't shown in either column,
+            # same as elsewhere in this app family.
+
+        farms.append({
+            "customer": str(customer),
+            "farm": str(farm),
+            "zone": zone,
+            "vannamei_ponds": vannamei_ponds,
+            "monodon_ponds": monodon_ponds,
         })
 
     farms.sort(key=lambda f: (f["zone"], f["customer"], f["farm"]))
@@ -1008,6 +1107,106 @@ _html = (
 )
 
 components.html(_html, height=680, scrolling=False)
+
+# =========================================================================
+# NEW -- "Zone wise Running Farms - Live Display" section.
+#
+# A plain (non-rotating) table below the carousel + Harvest Updates
+# panel, grouped by Zone. Columns: Customer Name + Farm Name with Code |
+# Vannamei Ponds | Monodon Ponds. Each pond is rendered as a small box
+# using the same status colors as the carousel above, showing that
+# pond's DOC Today value, and -- ported from the Marketing Manager app's
+# Pond Layout cards -- a WQ Special Cases icon/caption and an Issues line
+# when either is present on that pond's latest saved record.
+# =========================================================================
+def _escape_html_zw(v):
+    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def _render_zone_wise_pond_box(p):
+    wq_icon_html = (
+        "<div style='position:absolute;top:2px;right:4px;font-size:.85rem;line-height:1;' "
+        "title='WQ Special Case'>🫨</div>"
+        if p["wq_special"] else ""
+    )
+    issues_html = (
+        f"<div style='font-size:.62rem;font-weight:700;color:#b91c1c;text-align:center;"
+        f"margin-top:3px;padding:0 3px;line-height:1.2;'>{_escape_html_zw(p['issues'])}</div>"
+        if p["issues"] else ""
+    )
+    wq_caption_html = (
+        f"<div style='font-size:.62rem;color:#b45309;text-align:center;margin-top:2px;"
+        f"line-height:1.2;padding:0 3px;'>🫨 {_escape_html_zw(p['wq_special'])}</div>"
+        if p["wq_special"] else ""
+    )
+    return (
+        "<div style='position:relative;display:inline-flex;flex-direction:column;align-items:center;"
+        "justify-content:center;width:96px;min-height:82px;margin:4px;border:2px solid #33415580;"
+        f"border-radius:10px;background:{p['color']};vertical-align:top;box-shadow:0 2px 6px rgba(0,0,0,.15);'>"
+        f"{wq_icon_html}"
+        f"<div style='font-size:.65rem;font-weight:600;color:#0f172a;'>Pond {_escape_html_zw(p['pond_no'])}</div>"
+        f"<div style='font-size:1.1rem;font-weight:800;color:#0f172a;margin:2px 0;'>{_escape_html_zw(p['display'])}</div>"
+        f"<div style='font-size:.6rem;font-weight:700;color:#0f172a;'>{_escape_html_zw(p['status'])}</div>"
+        f"{issues_html}"
+        f"{wq_caption_html}"
+        "</div>"
+    )
+
+def render_zone_wise_section(zone_wise_farms):
+    if not zone_wise_farms:
+        st.info("No running farms found.")
+        return
+
+    rows_html = ""
+    current_zone = None
+    for f in zone_wise_farms:
+        if f["zone"] != current_zone:
+            current_zone = f["zone"]
+            rows_html += (
+                "<tr><td colspan='3' style='background:#1e293b;color:#f8fafc;font-weight:800;"
+                f"font-size:.85rem;padding:8px 14px;'>Zone {_escape_html_zw(current_zone or '-')}</td></tr>"
+            )
+        vannamei_html = (
+            "".join(_render_zone_wise_pond_box(p) for p in f["vannamei_ponds"])
+            or "<span style='color:#94a3b8;font-size:.85rem;'>—</span>"
+        )
+        monodon_html = (
+            "".join(_render_zone_wise_pond_box(p) for p in f["monodon_ponds"])
+            or "<span style='color:#94a3b8;font-size:.85rem;'>—</span>"
+        )
+        rows_html += (
+            "<tr>"
+            "<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;white-space:nowrap;'>"
+            f"<div style='font-weight:700;color:#0f172a;font-size:.95rem;'>{_escape_html_zw(f['farm'])}</div>"
+            f"<div style='font-size:.82rem;color:#475569;'>{_escape_html_zw(f['customer'])}</div>"
+            "</td>"
+            f"<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;'>{vannamei_html}</td>"
+            f"<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;'>{monodon_html}</td>"
+            "</tr>"
+        )
+
+    table_html = (
+        "<div style='overflow-x:auto;width:100%;'>"
+        "<table style='width:100%;border-collapse:collapse;font-family:\"Segoe UI\", Tahoma, sans-serif;'>"
+        "<thead><tr style='background:#0f172a;color:#f8fafc;'>"
+        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Customer Name / Farm Name with Code</th>"
+        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Vannamei Ponds</th>"
+        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Monodon Ponds</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table></div>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+
+st.markdown("---")
+st.subheader("🗺️ Zone wise Running Farms — Live Display")
+zone_wise_farms = build_zone_wise_running_farms(df)
+render_zone_wise_section(zone_wise_farms)
+st.caption(
+    f"{len(zone_wise_farms)} running farm(s) shown, grouped by Zone • "
+    "V/M columns list only that farm's Vannamei / Monodon ponds • "
+    "box color = pond status (blue = Running, yellow = Partial H, green = Full H, gray = Soon to be) • "
+    "number = DOC Today"
+)
 
 st.markdown("---")
 st.markdown(
