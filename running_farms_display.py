@@ -97,7 +97,7 @@ LOCATIONS_CSV_URL = (
 # How wide an area (in degrees) to capture around each farm's point for
 # the background snapshot -- small enough to stay zoomed in on the farm,
 # large enough that panning/precision differences still land inside frame.
-MAP_BBOX_SPAN_DEG = 0.008
+MAP_BBOX_SPAN_DEG = 0.0025
 MAP_IMAGE_SIZE = "900,600"
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
@@ -557,7 +557,7 @@ _HTML_TEMPLATE = """
        original zone-tint-only look untouched. */
     .kmn-slide-mapbg {
       position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
-      object-fit: cover; filter: blur(4px) brightness(.7) saturate(1.15);
+      object-fit: cover; filter: blur(1.5px) brightness(.75) saturate(1.15);
       z-index: 0;
     }
     /* ---- NEW: the existing zone-colored gradient, now drawn as its own
