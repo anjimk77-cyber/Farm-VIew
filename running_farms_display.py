@@ -477,7 +477,7 @@ _HTML_TEMPLATE = """
        Updates panel centered in the middle of the page. */
     #kmn-wrap.kmn-fullscreen-mode {
        position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 999999;
-       background: #0b1220; padding: 10px; box-sizing: border-box;
+       background: #0b1220; padding: 16px; box-sizing: border-box;
        display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-carousel {
