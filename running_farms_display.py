@@ -26,6 +26,12 @@ from google.oauth2.service_account import Credentials
 #      that farm's Zone (from Customer List.xlsx), and each pond box
 #      keeps the same status colors used across this app family (blue =
 #      Running, yellow = Partial H, green = Full H, gray = Soon to be).
+#      NEW: behind that zone tint, each slide also shows a blurred
+#      satellite snapshot of the farm's actual map location (pulled
+#      from the same Locations Google Sheet the "Farm Map" app uses),
+#      so the display gives a sense of place without competing with the
+#      Pond Layout content on top of it. Farms with no matching location
+#      simply fall back to the existing zone-tint-only background.
 #   2) A "Harvest Updates" panel that shows recent Harvest Details ONE AT
 #      A TIME, sliding in from the right every HARVEST_UPDATE_SECONDS,
 #      e.g.:
@@ -76,6 +82,23 @@ ZONE_PALETTE = [
 _CUSTOMER_CODE_COLUMN_CANDIDATES = [
     "Customer Code", "Customer ID", "Customer Code with Code", "Code", "Cust Code",
 ]
+
+# ---- NEW: Farm location lookup (same public "Locations" Google Sheet the
+# "Farm Map" app in this family reads -- Customer ID / Customer Name /
+# Farm Name / Location, where Location is either "lat, lon" or a WKT
+# Polygon string). Used ONLY to fetch a static satellite snapshot for the
+# blurred slide background below; nothing else about this app changes.
+LOCATIONS_SHEET_ID = "1v2qTD5iUtdjFTixt9VZ1vM0dZPnyEVz4AYHtILVJi0A"
+LOCATIONS_GID = "0"
+LOCATIONS_CSV_URL = (
+    f"https://docs.google.com/spreadsheets/d/{LOCATIONS_SHEET_ID}"
+    f"/export?format=csv&gid={LOCATIONS_GID}"
+)
+# How wide an area (in degrees) to capture around each farm's point for
+# the background snapshot -- small enough to stay zoomed in on the farm,
+# large enough that panning/precision differences still land inside frame.
+MAP_BBOX_SPAN_DEG = 0.008
+MAP_IMAGE_SIZE = "900,600"
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
 st.subheader("🎡 Running Farms — Live Display")
@@ -157,6 +180,89 @@ for _col in REQUIRED_COLS:
     )
 
 # =========================================================================
+# NEW -- LOAD FARM LOCATIONS (for the blurred slide background only)
+#
+# Ported from the "Farm Map" app's own loader/parser so a farm's point
+# (or polygon centroid) can be turned into a small satellite snapshot.
+# This is read-only, best-effort: if the sheet can't be reached, farms
+# just fall back to the existing zone-tint-only background -- nothing
+# else in this app is affected.
+# =========================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def load_farm_locations():
+    try:
+        loc_df = pd.read_csv(LOCATIONS_CSV_URL)
+        loc_df.columns = [c.strip() for c in loc_df.columns]
+        return loc_df
+    except Exception:
+        return pd.DataFrame(columns=["Customer ID", "Customer Name", "Farm Name", "Location"])
+
+def parse_location(location):
+    """
+    Parses the Locations sheet's Location cell in either of two formats:
+      - "lat, lon"                                    -> plain point
+      - "Polygon ((lon lat, lon lat, ...))"            -> WKT polygon ring
+    Returns (lat, lon) -- the point, or the polygon's centroid -- or
+    (None, None) if the value can't be parsed at all.
+    """
+    if not isinstance(location, str):
+        return None, None
+    location = location.strip()
+
+    if location.lower().startswith("polygon"):
+        coords_match = re.search(r"\(\(([^)]+)\)\)", location)
+        if not coords_match:
+            return None, None
+        points = []
+        for pair in coords_match.group(1).split(","):
+            parts = pair.strip().split()
+            if len(parts) != 2:
+                continue
+            try:
+                lon, lat = float(parts[0]), float(parts[1])
+                points.append((lat, lon))
+            except ValueError:
+                continue
+        if not points:
+            return None, None
+        avg_lat = sum(p[0] for p in points) / len(points)
+        avg_lon = sum(p[1] for p in points) / len(points)
+        return avg_lat, avg_lon
+
+    match = re.match(r"\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*", location)
+    if not match:
+        return None, None
+    return float(match.group(1)), float(match.group(2))
+
+def build_farm_location_lookup():
+    """Returns {customer_id_code (upper): (lat, lon)}, built once per
+    (cached) Locations sheet load."""
+    loc_df = load_farm_locations()
+    lookup = {}
+    if loc_df.empty or "Location" not in loc_df.columns or "Customer ID" not in loc_df.columns:
+        return lookup
+    for _, row in loc_df.iterrows():
+        code = str(row.get("Customer ID", "")).strip().upper()
+        if not code:
+            continue
+        lat, lon = parse_location(row.get("Location", ""))
+        if lat is not None and lon is not None:
+            lookup[code] = (lat, lon)
+    return lookup
+
+def build_map_image_url(lat, lon):
+    """A single static satellite snapshot (no Leaflet/JS map needed) via
+    ArcGIS's MapServer 'export' endpoint, centered on (lat, lon). Used
+    as a plain <img> so it can be blurred with a CSS filter client-side."""
+    min_lon, max_lon = lon - MAP_BBOX_SPAN_DEG, lon + MAP_BBOX_SPAN_DEG
+    min_lat, max_lat = lat - MAP_BBOX_SPAN_DEG, lat + MAP_BBOX_SPAN_DEG
+    return (
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+        f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}&bboxSR=4326&size={MAP_IMAGE_SIZE}"
+        "&format=png32&transparent=false&f=image"
+    )
+
+# =========================================================================
 # HELPERS -- ported from the Marketing Manager / full manager app's Pond
 # Layout logic, kept self-contained here.
 # =========================================================================
@@ -212,6 +318,19 @@ def _doc_today(row):
             return doc_num + (full_date - parsed).days
     return doc_num + (pd.Timestamp(date.today()) - parsed).days
 
+def _customer_code_lookup():
+    lookup = {}
+    for _, row in customer_df.drop_duplicates(subset=["Customer Name", "Farm Name with Code"]).iterrows():
+        code = ""
+        for cand in _CUSTOMER_CODE_COLUMN_CANDIDATES:
+            if cand in customer_df.columns:
+                val = str(row.get(cand, "")).strip()
+                if val and val.lower() != "nan":
+                    code = val
+                    break
+        lookup[(row["Customer Name"], row["Farm Name with Code"])] = code
+    return lookup
+
 # =========================================================================
 # BUILD "RUNNING FARMS" DATA FOR THE CAROUSEL
 #
@@ -259,6 +378,11 @@ def build_running_farms(df):
     ]
     zone_colors = build_zone_colors(zones_seen)
 
+    # NEW -- code + location lookups, used only to attach an (optional)
+    # blurred satellite background image per farm below.
+    code_lookup = _customer_code_lookup()
+    farm_location_lookup = build_farm_location_lookup()
+
     farms = []
     for (customer, farm), group in latest_per_pond.groupby(["Customer", "Farm Name with Code"]):
         total_ponds = group["Pond Number"].nunique()
@@ -284,12 +408,24 @@ def build_running_farms(df):
                 "color": _pond_color(status),
             })
 
+        # NEW -- resolve this farm's map background image, if a matching
+        # location exists. Failure here (no code, no match, bad coords)
+        # just leaves map_image empty and the slide falls back to the
+        # existing zone-tint-only background.
+        code = code_lookup.get((customer, farm), "")
+        map_image = ""
+        if code:
+            latlon = farm_location_lookup.get(code.upper())
+            if latlon:
+                map_image = build_map_image_url(latlon[0], latlon[1])
+
         farms.append({
             "customer": str(customer),
             "farm": str(farm),
             "zone": zone,
             "zone_color": zone_colors.get(zone, "#2563eb"),
             "ponds": ponds,
+            "map_image": map_image,
         })
 
     farms.sort(key=lambda f: (f["zone"], f["customer"], f["farm"]))
@@ -304,18 +440,8 @@ def build_running_farms(df):
 # shown ONE AT A TIME (sliding in from the right every
 # HARVEST_UPDATE_SECONDS) rather than as a scrolling ticker.
 # =========================================================================
-def _customer_code_lookup():
-    lookup = {}
-    for _, row in customer_df.drop_duplicates(subset=["Customer Name", "Farm Name with Code"]).iterrows():
-        code = ""
-        for cand in _CUSTOMER_CODE_COLUMN_CANDIDATES:
-            if cand in customer_df.columns:
-                val = str(row.get(cand, "")).strip()
-                if val and val.lower() != "nan":
-                    code = val
-                    break
-        lookup[(row["Customer Name"], row["Farm Name with Code"])] = code
-    return lookup
+def _customer_code_lookup_for_ticker():
+    return _customer_code_lookup()
 
 def _harvest_label(h_type):
     t = str(h_type).strip().lower()
@@ -345,7 +471,7 @@ def build_harvest_ticker(df, limit=40):
     if len(df) == 0 or not required.issubset(df.columns):
         return []
 
-    code_lookup = _customer_code_lookup()
+    code_lookup = _customer_code_lookup_for_ticker()
     events = []
 
     for _, row in df.iterrows():
@@ -416,13 +542,37 @@ _HTML_TEMPLATE = """
       box-shadow: 0 8px 30px rgba(0,0,0,.28); flex-shrink: 0;
     }
     .kmn-slide {
-      position: absolute; inset: 0; display: flex; flex-direction: column;
-      align-items: center; justify-content: flex-start; padding: 34px 20px 10px;
+      position: absolute; inset: 0; overflow: hidden;
       transform: translateX(100%); transition: transform .6s ease-in-out;
       pointer-events: none;
     }
     .kmn-slide.active { transform: translateX(0); pointer-events: auto; z-index: 2; }
     .kmn-slide.leaving { transform: translateX(-100%); z-index: 1; pointer-events: none; }
+
+    /* ---- NEW: blurred farm-location snapshot sitting behind the zone
+       tint + content of each slide. Sized slightly larger than the
+       slide (inset:-20px) so the blur's soft edge never shows a lighter
+       halo at the slide's border. Slides with no matching location
+       simply never get this element (see JS below), so they keep the
+       original zone-tint-only look untouched. */
+    .kmn-slide-mapbg {
+      position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
+      object-fit: cover; filter: blur(10px) brightness(.55) saturate(1.15);
+      z-index: 0;
+    }
+    /* ---- NEW: the existing zone-colored gradient, now drawn as its own
+       layer on top of the blurred map (instead of directly on the
+       slide), so the map shows through exactly the same way the old
+       dark radial background used to. */
+    .kmn-slide-tint { position: absolute; inset: 0; z-index: 1; }
+    /* ---- NEW: wraps the farm header + pond grid so it always sits
+       above both background layers. */
+    .kmn-slide-content {
+      position: relative; z-index: 2; width: 100%; height: 100%;
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+      padding: 34px 20px 10px;
+    }
+
     .kmn-slide-header { text-align: center; margin-bottom: 18px; }
     .kmn-zone-badge {
       display: inline-block; padding: 5px 16px; border-radius: 999px; font-size: .8rem;
@@ -489,7 +639,7 @@ _HTML_TEMPLATE = """
     /* Centers each slide's content (zone badge, farm name, pond grid)
        vertically in the middle of the carousel while in Full Screen,
        instead of pinning it to the top. */
-    #kmn-wrap.kmn-fullscreen-mode .kmn-slide {
+    #kmn-wrap.kmn-fullscreen-mode .kmn-slide-content {
       justify-content: center;
     }
   </style>
@@ -542,6 +692,9 @@ _HTML_TEMPLATE = """
 
       // ---- Each zone gets its own tinted slide background (in addition
       // to the zone badge), so different zones are visually distinct.
+      // This now draws on the .kmn-slide-tint layer (which sits above
+      // the NEW blurred farm-location image, when one exists) instead
+      // of directly on the slide, so the map still shows through.
       function zoneSlideBackground(zoneColor) {
         return 'linear-gradient(165deg, ' + zoneColor + '55 0%, #0f172a 62%)';
       }
@@ -559,14 +712,26 @@ _HTML_TEMPLATE = """
               + '<div class="kmn-pond-status">' + escapeHtml(p.status) + '</div>'
               + '</div>';
           }).join('');
-          return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '" '
-            + 'style="background:' + zoneSlideBackground(f.zone_color) + ';">'
+
+          // NEW: only add the blurred map <img> when this farm actually
+          // resolved a location -- farms with no match keep exactly the
+          // old zone-tint-only background. onerror hides it gracefully
+          // if the snapshot URL ever fails to load.
+          const mapBgHtml = f.map_image
+            ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
+            : '';
+
+          return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
+            + mapBgHtml
+            + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
+            + '<div class="kmn-slide-content">'
             + '<div class="kmn-slide-header">'
             + '<div class="kmn-zone-badge" style="background:' + f.zone_color + ';">Zone ' + escapeHtml(f.zone || '-') + '</div>'
             + '<div class="kmn-farm-name">' + escapeHtml(f.farm) + '</div>'
             + '<div class="kmn-customer-name">' + escapeHtml(f.customer) + '</div>'
             + '</div>'
             + '<div class="kmn-pond-grid">' + ponds + '</div>'
+            + '</div>'
             + '</div>';
         }).join('');
 
