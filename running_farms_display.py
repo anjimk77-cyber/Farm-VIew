@@ -557,7 +557,7 @@ _HTML_TEMPLATE = """
        original zone-tint-only look untouched. */
     .kmn-slide-mapbg {
       position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
-      object-fit: cover; filter: blur(10px) brightness(.55) saturate(1.15);
+      object-fit: cover; filter: blur(4px) brightness(.7) saturate(1.15);
       z-index: 0;
     }
     /* ---- NEW: the existing zone-colored gradient, now drawn as its own
