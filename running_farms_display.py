@@ -97,13 +97,13 @@ LOCATIONS_CSV_URL = (
 # How wide an area (in degrees) to capture around each farm's point for
 # the background snapshot -- small enough to stay zoomed in on the farm,
 # large enough that panning/precision differences still land inside frame.
-MAP_BBOX_SPAN_DEG = 0.0025
+MAP_BBOX_SPAN_DEG = 0.005
 MAP_IMAGE_WIDTH = 900
 MAP_IMAGE_HEIGHT = 600
 MAP_IMAGE_SIZE = f"{MAP_IMAGE_WIDTH},{MAP_IMAGE_HEIGHT}"
 # Extra padding (in degrees) added around a farm's own polygon boundary so
 # the outline isn't cropped flush against the image edge.
-MAP_POLYGON_PADDING_DEG = 0.0012
+MAP_POLYGON_PADDING_DEG = 0.002
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
 st.subheader("🎡 Running Farms — Live Display")
@@ -282,8 +282,8 @@ def build_map_image_url(lat, lon, polygon=None):
         # a floor for tiny/thin polygons) so the boundary sits comfortably
         # inside the frame with breathing room, instead of touching --
         # or nearly filling -- the image edges.
-        pad_lat = max(lat_span * 0.4, MAP_POLYGON_PADDING_DEG)
-        pad_lon = max(lon_span * 0.4, MAP_POLYGON_PADDING_DEG)
+        pad_lat = max(lat_span * 0.9, MAP_POLYGON_PADDING_DEG)
+        pad_lon = max(lon_span * 0.9, MAP_POLYGON_PADDING_DEG)
         min_lat, max_lat = min(lats) - pad_lat, max(lats) + pad_lat
         min_lon, max_lon = min(lons) - pad_lon, max(lons) + pad_lon
     else:
@@ -600,7 +600,7 @@ _HTML_TEMPLATE = """
        original zone-tint-only look untouched. */
     .kmn-slide-mapbg {
       position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
-      object-fit: cover; filter: blur(1.5px) brightness(.75) saturate(1.15);
+      object-fit: cover; filter: brightness(.85) saturate(1.15);
       z-index: 0;
     }
     /* ---- NEW: the existing zone-colored gradient, now drawn as its own
