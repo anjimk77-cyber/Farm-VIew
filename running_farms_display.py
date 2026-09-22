@@ -671,12 +671,15 @@ _HTML_TEMPLATE = """
     .kmn-pond-wq-caption {
       font-size: .65rem; color: #fbbf24; text-align: center; margin-top: 3px; line-height: 1.2;
     }
-    /* ---- NEW: small, sharp "exact location" thumbnail shown after the
-       Pond Layout grid -- distinct from the dimmed full-slide background
-       image above, which stays exactly as it was. */
+    /* ---- "exact location" thumbnail shown after the Pond Layout grid --
+       distinct from the dimmed full-slide background image above, which
+       stays exactly as it was. Slightly bigger than before, and now an
+       <svg> (image + polygon boundary overlay) instead of a plain <img>
+       so a farm's actual shape outline is drawn on top of the snapshot
+       when a polygon location is available. */
     .kmn-location-thumb-wrap { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
     .kmn-location-thumb {
-      width: 220px; height: 150px; object-fit: cover; border-radius: 10px;
+      display: block; width: 260px; height: 180px; border-radius: 10px; overflow: hidden;
       border: 2px solid rgba(255,255,255,.35); box-shadow: 0 4px 14px rgba(0,0,0,.35);
     }
     .kmn-location-caption { margin-top: 5px; font-size: .75rem; color: #e2e8f0; font-weight: 600; }
@@ -755,6 +758,11 @@ _HTML_TEMPLATE = """
       const carouselSeconds = __CAROUSEL_SECONDS__;
       const harvestUpdateSeconds = __HARVEST_UPDATE_SECONDS__;
       const dataRefreshSeconds = __DATA_REFRESH_SECONDS__;
+      // NEW -- native pixel size of every map_image snapshot, so the
+      // location-thumbnail polygon overlay can be plotted in the exact
+      // same coordinate space the snapshot itself was rendered at.
+      const mapImageWidth = __MAP_IMAGE_WIDTH__;
+      const mapImageHeight = __MAP_IMAGE_HEIGHT__;
 
       const slidesEl = document.getElementById('kmn-slides');
       const dotsEl = document.getElementById('kmn-dots');
@@ -776,6 +784,24 @@ _HTML_TEMPLATE = """
       function escapeHtml(v) {
         return String(v == null ? '' : v)
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      // ---- NEW: converts a farm's polygon (list of [lat, lon] pairs)
+      // into an SVG "points" attribute string, positioned in the same
+      // 0..mapImageWidth / 0..mapImageHeight pixel space the snapshot
+      // image itself was exported at (bbox -> pixels is a plain linear
+      // map since the snapshot was rendered at exactly that bbox/size).
+      function polygonPointsAttr(polygon, bbox) {
+        if (!polygon || !polygon.length || !bbox) return '';
+        const minLon = bbox[0], minLat = bbox[1], maxLon = bbox[2], maxLat = bbox[3];
+        const lonSpan = (maxLon - minLon) || 1;
+        const latSpan = (maxLat - minLat) || 1;
+        return polygon.map(function (pt) {
+          const lat = pt[0], lon = pt[1];
+          const x = (lon - minLon) / lonSpan * mapImageWidth;
+          const y = (maxLat - lat) / latSpan * mapImageHeight;
+          return x.toFixed(1) + ',' + y.toFixed(1);
+        }).join(' ');
       }
 
       // ---- Each zone gets its own tinted slide background (in addition
@@ -827,15 +853,29 @@ _HTML_TEMPLATE = """
             ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
             : '';
 
-          // NEW: a small, sharp "exact location" thumbnail shown after the
-          // Pond Layout grid -- separate from the dimmed full-slide
-          // background above, and only added when a location was found.
-          const locationThumbHtml = f.map_image
-            ? '<div class="kmn-location-thumb-wrap">'
-              + '<img class="kmn-location-thumb" src="' + f.map_image + '" alt="Farm location" onerror="this.parentElement.remove();" />'
+          // ---- "exact location" thumbnail shown after the Pond Layout
+          // grid -- separate from the dimmed full-slide background above,
+          // only added when a location was found. Built as an <svg> (the
+          // snapshot as an <image>, plus a polygon outline drawn on top
+          // in the exact same coordinate space) instead of a plain <img>,
+          // so a farm with a polygon boundary shows its actual shape.
+          let locationThumbHtml = '';
+          if (f.map_image) {
+            const polyPoints = polygonPointsAttr(f.map_polygon, f.map_bbox);
+            const polygonOverlaySvg = polyPoints
+              ? '<polygon points="' + polyPoints + '" fill="rgba(255,255,255,0.12)" '
+                + 'stroke="#ffffff" stroke-width="8" stroke-linejoin="round" />'
+              : '';
+            locationThumbHtml = '<div class="kmn-location-thumb-wrap">'
+              + '<svg class="kmn-location-thumb" viewBox="0 0 ' + mapImageWidth + ' ' + mapImageHeight + '" '
+              + 'preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">'
+              + '<image href="' + f.map_image + '" x="0" y="0" width="' + mapImageWidth + '" height="' + mapImageHeight + '" '
+              + 'preserveAspectRatio="xMidYMid slice" onerror="this.closest(\'.kmn-location-thumb-wrap\').remove();" />'
+              + polygonOverlaySvg
+              + '</svg>'
               + '<div class="kmn-location-caption">📍 Farm Location</div>'
-              + '</div>'
-            : '';
+              + '</div>';
+          }
 
           return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
             + mapBgHtml
