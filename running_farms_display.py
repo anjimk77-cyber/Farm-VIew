@@ -18,26 +18,26 @@ from google.oauth2.service_account import Credentials
 # Manager & Technician view). It performs NO writes to the Google Sheet.
 #
 # What it shows:
-#   1) An auto-rotating carousel (circular "zoom in" transition, one
-#      farm per slide, changing every CAROUSEL_SECONDS) of every
-#      Customer + Farm that is currently "Running" (i.e. NOT every pond
-#      on that farm is at Full Harvest) -- Customer Name, Farm Name with
-#      Code, and that farm's Pond Layout. Each slide is themed with a
-#      color for that farm's Zone (from Customer List.xlsx). Each pond
-#      card uses the SAME detailed Pond Layout design as the Marketing
-#      Manager & Technician view app (status colors, WQ Special Case
-#      icon, Stocking Density / L.V.D / Feed per Day / ABW, Total
-#      Harvest KG, Expecting Harvest / Harvest Weight, and Issues).
+#   1) An auto-rotating carousel (one farm per slide, sliding in from the
+#      right every CAROUSEL_SECONDS) of every Customer + Farm that is
+#      currently "Running" (i.e. NOT every pond on that farm is at Full
+#      Harvest) -- Customer Name, Farm Name with Code, and that farm's
+#      Pond Layout. Each slide's background is tinted with a color for
+#      that farm's Zone (from Customer List.xlsx), and each pond box
+#      keeps the same status colors used across this app family (blue =
+#      Running, yellow = Partial H, green = Full H, gray = Soon to be).
 #   2) A "Harvest Updates" panel that shows recent Harvest Details ONE AT
-#      A TIME, changing every HARVEST_UPDATE_SECONDS, e.g.:
+#      A TIME, sliding in from the right every HARVEST_UPDATE_SECONDS,
+#      e.g.:
 #      "Wasantha Pathmakumara -C00876 Madurankuliya Farm Partial H from
 #       Pond No 1 - 1100 KG with 10 ABW at 2026/09/19"
 #   3) A "Stay" tick box that freezes BOTH the carousel and the Harvest
 #      Updates panel in place (and pauses the page's periodic data
 #      refresh) so a viewer can read one slide/item without it moving on.
-#   4) A "⛶ Full Screen" button that expands the whole display (Pond
-#      Layout carousel + Harvest Updates panel) to fill the entire
-#      browser window -- handy for a TV / kiosk screen.
+#   4) A "⛶ Full Screen" button that expands the whole display to fill
+#      the entire browser window -- while in Full Screen, the Pond
+#      Layout carousel and the Harvest Updates panel are centered in the
+#      middle of the page.
 #
 # All of the carousel/rotation/full-screen behaviour runs client-side in
 # a single self-contained HTML/CSS/JS component
@@ -112,14 +112,8 @@ def load_data():
         df["Harvest Status"] = ""
     if "Harvest Status 2" not in df.columns:
         df["Harvest Status 2"] = ""
-    # "WQ Special Cases" already exists as its own column in the Sheet
-    # (outside COLUMN_ORDER, same as "Harvest Status") -- kept here so the
-    # Pond Layout cards below can show the same sad-face icon/label used
-    # by the Marketing Manager & Technician view app.
-    if "WQ Special Cases" not in df.columns:
-        df["WQ Special Cases"] = ""
     if len(df) > 0:
-        df = df[COLUMN_ORDER + ["Harvest Status", "Harvest Status 2", "WQ Special Cases"]]
+        df = df[COLUMN_ORDER + ["Harvest Status", "Harvest Status 2"]]
     df = df.astype(str).replace("nan", "")
     if "Deleted" in df.columns:
         is_deleted = df["Deleted"].astype(str).str.strip().str.lower().isin(["yes", "true", "1"])
@@ -163,11 +157,8 @@ for _col in REQUIRED_COLS:
     )
 
 # =========================================================================
-# HELPERS -- ported from the Marketing Manager view app's Pond Layout
-# logic, kept self-contained here so this display uses the exact same
-# per-pond fields and rules (status, colors, WQ Special Case icon,
-# Stocking Density / L.V.D / Feed per Day / ABW, Total Harvest KG,
-# Expecting Harvest / Harvest Weight, Issues).
+# HELPERS -- ported from the Marketing Manager / full manager app's Pond
+# Layout logic, kept self-contained here.
 # =========================================================================
 def _farm_zone(customer, farm):
     match = customer_df[
@@ -192,52 +183,11 @@ def _pond_status(prow, has_partial_history):
     return "Running"
 
 def _pond_color(status):
-    # Same palette as the Marketing Manager & Technician view app's
-    # Pond Layout: light yellow / green / gray boxes, default light blue.
     return {
-        "Partial H": "#fff3cd",
-        "Full H": "#d4edda",
-        "Soon to be": "#e2e2e2",
-    }.get(status, "#eaf4ff")
-
-def _species_letter(species_culture):
-    s = str(species_culture).strip().lower()
-    if "vannamei" in s:
-        return "V"
-    elif "monodon" in s:
-        return "M"
-    return ""
-
-def _parse_pond_harvest_kg(raw_value):
-    """Same combined-harvest parser used elsewhere in this app family:
-    'A (2000)' -> Full total. '2000 (2)' -> per-pond share (2000 / 2).
-    Plain numbers are returned as-is."""
-    s = str(raw_value).strip()
-    if not s:
-        return float("nan")
-    m = re.match(r"^([\d,]+(?:\.\d+)?)\s*\(\s*(\d+)\s*\)\s*$", s)
-    if m:
-        total = pd.to_numeric(m.group(1).replace(",", ""), errors="coerce")
-        count = pd.to_numeric(m.group(2), errors="coerce")
-        if pd.notna(total) and pd.notna(count) and count > 0:
-            return total / count
-        return float("nan")
-    return pd.to_numeric(s.replace(",", ""), errors="coerce")
-
-def _harvest_kg_sum_row(row):
-    """Per-row contribution to a pond's running Total Harvest KG -- both
-    harvest slots count whenever that slot's own Harvest Type is filled
-    in, same rule used by the Marketing Manager & Technician view app."""
-    row_total = 0.0
-    t1 = str(row.get("Harvest Type", "")).strip()
-    kg1 = _parse_pond_harvest_kg(row.get("Harvest KG", ""))
-    if t1 and pd.notna(kg1):
-        row_total += kg1
-    t2 = str(row.get("Harvest Type 2", "")).strip()
-    kg2 = _parse_pond_harvest_kg(row.get("Harvest KG 2", ""))
-    if t2 and pd.notna(kg2):
-        row_total += kg2
-    return row_total
+        "Partial H": "#f59e0b",
+        "Full H": "#22c55e",
+        "Soon to be": "#94a3b8",
+    }.get(status, "#3b82f6")
 
 def _doc_today(row):
     if str(row.get("Cycle Type") or "").strip() == "Soon to be":
@@ -270,10 +220,6 @@ def _doc_today(row):
 # Visit Date Report uses elsewhere in this app family) -- individual
 # ponds within a running farm can still show Partial H / Full H / Soon
 # to be, they just aren't ALL at Full H yet.
-#
-# Each pond now carries the SAME fields as the Marketing Manager &
-# Technician view app's Pond Layout cards, so this display can render
-# identical-looking pond boxes.
 # =========================================================================
 def build_running_farms(df):
     required = {"Customer", "Farm Name with Code", "Pond Number", "Date", "Harvest Type", "Harvest Type 2"}
@@ -298,15 +244,6 @@ def build_running_farms(df):
         ))
         .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HasPartial"]
         .any()
-    )
-
-    # Running Total Harvest KG per pond -- summed across EVERY saved
-    # record for that pond (not just its latest one), same as the
-    # Marketing Manager & Technician view app's Pond Layout cards.
-    total_harvest_kg_by_pond = (
-        work.assign(_HarvestKGRow=work.apply(_harvest_kg_sum_row, axis=1))
-        .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HarvestKGRow"]
-        .sum()
     )
 
     latest_per_pond["_HasPartial"] = latest_per_pond.apply(
@@ -334,75 +271,17 @@ def build_running_farms(df):
         for _, prow in group.sort_values("Pond Number").iterrows():
             status = prow["_Status"]
             doc_val = prow["_DocToday"]
-            pond_no = prow.get("Pond Number", "")
-
-            total_kg = total_harvest_kg_by_pond.get((customer, farm, pond_no), 0) or 0
-            total_kg_str = f"{total_kg:,.2f}" if total_kg else ""
-
-            density_val = pd.to_numeric(prow.get("Density", ""), errors="coerce")
-            density_str = f"{density_val:,.0f}" if pd.notna(density_val) else "-"
-            lvd_str = str(prow.get("Date", "")).strip() or "-"
-            feed_day_str = str(prow.get("Feed Per Day", "")).strip() or "-"
-            abw_str = str(prow.get("ABW", "")).strip() or "-"
-
-            issues_str = str(prow.get("Issues", "")).strip()
-            if issues_str.lower() == "nan":
-                issues_str = ""
-            wq_special_str = str(prow.get("WQ Special Cases", "")).strip()
-            if wq_special_str.lower() == "nan":
-                wq_special_str = ""
-
-            species_letter = _species_letter(prow.get("Species Culture", ""))
-
-            doc_today_str = ""
-            started_label = ""
-            harvest_date_str = ""
-
             if status == "Full H":
-                harvest_date_str = (
-                    str(prow.get("Harvest Date 2", "")).strip() or str(prow.get("Harvest Date", "")).strip() or "-"
-                )
-                t2_expect = str(prow.get("Harvest Type 2", "")).strip().lower()
-                kg2_expect = _parse_pond_harvest_kg(prow.get("Harvest KG 2", ""))
-                kg1_expect = _parse_pond_harvest_kg(prow.get("Harvest KG", ""))
-                harvest_kg_val = kg2_expect if ("full" in t2_expect and pd.notna(kg2_expect)) else kg1_expect
-                expect_label = "Harvest Weight"
-                expect_val = f"{harvest_kg_val:,.2f} KG" if pd.notna(harvest_kg_val) else "-"
+                display = "H"
             elif status == "Soon to be":
-                expect_label = "Expecting Harvest"
-                expect_val = "-"
+                display = "-"
             else:
-                expect_label = "Expecting Harvest"
-                expect_kg = pd.to_numeric(prow.get("Expect Harvest (KG)", ""), errors="coerce")
-                expect_val = f"{expect_kg:,.2f} KG" if pd.notna(expect_kg) else "-"
-
-            if status not in ("Full H", "Soon to be"):
-                doc_today_str = str(doc_val) if doc_val is not None else "-"
-                try:
-                    started_date = (
-                        pd.Timestamp(date.today()) - pd.Timedelta(days=int(float(doc_val)))
-                    ).strftime("%Y-%m-%d")
-                    started_label = f"Started on {started_date}"
-                except (TypeError, ValueError):
-                    started_label = "Started on ---"
-
+                display = str(doc_val) if doc_val is not None else "-"
             ponds.append({
-                "pond_no": str(pond_no),
+                "pond_no": str(prow.get("Pond Number", "")),
                 "status": status,
+                "display": display,
                 "color": _pond_color(status),
-                "species_letter": species_letter,
-                "wq_special": wq_special_str,
-                "issues": issues_str,
-                "doc_today": doc_today_str,
-                "started_label": started_label,
-                "harvest_date": harvest_date_str,
-                "total_harvest_kg": total_kg_str,
-                "expect_label": expect_label,
-                "expect_val": expect_val,
-                "density": density_str,
-                "lvd": lvd_str,
-                "feed_day": feed_day_str,
-                "abw": abw_str,
             })
 
         farms.append({
@@ -422,8 +301,8 @@ def build_running_farms(df):
 # Splits each saved row into up to two harvest events (1st slot / 2nd
 # slot, same convention used by "All Harvest Details" elsewhere in this
 # app family), formatted as one line each, most recent first. These are
-# shown ONE AT A TIME (rotating every HARVEST_UPDATE_SECONDS) rather than
-# as a scrolling ticker.
+# shown ONE AT A TIME (sliding in from the right every
+# HARVEST_UPDATE_SECONDS) rather than as a scrolling ticker.
 # =========================================================================
 def _customer_code_lookup():
     lookup = {}
@@ -522,69 +401,47 @@ st.caption(
 
 # =========================================================================
 # RENDER -- self-contained HTML/CSS/JS component. All animation (the
-# circular zoom carousel transition for Pond Layout, the one-by-one
-# Harvest Updates rotation, the "Stay" freeze toggle, and the Full Screen
-# toggle) runs entirely client-side; Python only supplies the data as
-# JSON once per page load.
+# right-side slide-in for Pond Layout, the right-side slide-in for
+# Harvest Updates, the "Stay" freeze toggle, and the Full Screen toggle)
+# runs entirely client-side; Python only supplies the data as JSON once
+# per page load.
 # =========================================================================
 _HTML_TEMPLATE = """
 <div id="kmn-wrap">
   <style>
     #kmn-wrap { font-family: 'Segoe UI', Tahoma, sans-serif; color:#1e293b; display:flex; flex-direction:column; }
     #kmn-carousel {
-      position: relative; width: 100%; height: 620px; overflow: hidden;
+      position: relative; width: 100%; height: 560px; overflow: hidden;
       border-radius: 16px; background: radial-gradient(circle at 50% 35%, #1e293b, #0f172a);
       box-shadow: 0 8px 30px rgba(0,0,0,.28); flex-shrink: 0;
     }
     .kmn-slide {
       position: absolute; inset: 0; display: flex; flex-direction: column;
       align-items: center; justify-content: flex-start; padding: 34px 20px 10px;
-      opacity: 0; transform: scale(.8); transition: opacity 1s ease, transform 1s ease;
+      transform: translateX(100%); transition: transform .6s ease-in-out;
       pointer-events: none;
     }
-    .kmn-slide.active { opacity: 1; transform: scale(1); pointer-events: auto; z-index: 2; }
-    .kmn-slide-header { text-align: center; margin-bottom: 14px; flex-shrink: 0; }
+    .kmn-slide.active { transform: translateX(0); pointer-events: auto; z-index: 2; }
+    .kmn-slide.leaving { transform: translateX(-100%); z-index: 1; pointer-events: none; }
+    .kmn-slide-header { text-align: center; margin-bottom: 18px; }
     .kmn-zone-badge {
       display: inline-block; padding: 5px 16px; border-radius: 999px; font-size: .8rem;
       font-weight: 700; color: #fff; letter-spacing: .03em; margin-bottom: 8px;
     }
     .kmn-farm-name { font-size: 1.75rem; font-weight: 800; color: #f8fafc; line-height: 1.2; }
     .kmn-customer-name { font-size: 1.1rem; color: #cbd5e1; margin-top: 2px; }
-
-    /* ---- Pond Layout cards: same design as the Marketing Manager &
-       Technician view app's Pond Layout section. */
     .kmn-pond-grid {
       display: flex; flex-wrap: wrap; justify-content: center; gap: 16px;
-      width: 100%; max-width: 1150px; flex: 1; overflow-y: auto; padding: 4px 6px 12px;
+      margin-top: 16px; max-width: 1100px;
     }
-    .kmn-pond-card { display: flex; flex-direction: column; align-items: center; margin: 4px; }
     .kmn-pond-box {
-      position: relative; width: 200px; min-height: 168px; border: 2px solid #1e293b;
-      border-radius: 8px; display: flex; flex-direction: column; align-items: center;
-      justify-content: flex-start; padding: 8px 0; box-shadow: 0 3px 10px rgba(0,0,0,.25);
+      width: 132px; min-height: 112px; border-radius: 12px; border: 2px solid rgba(255,255,255,.18);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      box-shadow: 0 3px 10px rgba(0,0,0,.25);
     }
-    .kmn-pond-label { font-size: .78rem; color: #555; }
-    .kmn-status-full { font-size: 1.15rem; font-weight: 800; color: red; }
-    .kmn-status-soon { font-size: 1.05rem; font-weight: 800; color: #555; }
-    .kmn-doc-today { font-size: 1.35rem; font-weight: 800; color: red; margin: 1px 0; }
-    .kmn-started { font-size: .68rem; color: #777; }
-    .kmn-subline { font-size: .7rem; color: #333; }
-    .kmn-expect {
-      font-size: .78rem; color: #333; text-align: center; width: 100%; margin-top: 4px;
-      border-top: 1px dashed #bbb; padding-top: 3px;
-    }
-    .kmn-extra {
-      font-size: .74rem; color: #333; text-align: left; width: 100%; padding: 0 8px;
-      margin-top: 4px; line-height: 1.35;
-    }
-    .kmn-issues {
-      margin-top: auto; width: 100%; text-align: center; font-size: .78rem; font-weight: 700;
-      border-top: 1px dashed #bbb; padding-top: 3px; color: red;
-    }
-    .kmn-wq-icon { position: absolute; top: 2px; right: 4px; font-size: 1.2rem; line-height: 1; }
-    .kmn-wq-text { font-size: .78rem; color: #fbbf24; text-align: center; max-width: 190px; margin-top: 2px; }
-    .kmn-species { font-size: .72rem; font-weight: 700; color: #e2e8f0; margin-top: 2px; }
-
+    .kmn-pond-label { font-size: .72rem; color: rgba(15,23,42,.75); font-weight: 600; }
+    .kmn-pond-doc { font-size: 1.45rem; font-weight: 800; color: #0f172a; margin: 2px 0; }
+    .kmn-pond-status { font-size: .68rem; font-weight: 700; color: rgba(15,23,42,.8); }
     .kmn-empty { color: #94a3b8; font-size: 1.2rem; margin-top: 60px; text-align: center; }
     .kmn-dots { position: absolute; bottom: 14px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; }
     .kmn-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .3s; }
@@ -597,33 +454,38 @@ _HTML_TEMPLATE = """
     }
     .kmn-fs-btn:hover { background: rgba(15,23,42,.9); }
 
-    /* ---- Harvest Updates: one item at a time, rotates every
-       HARVEST_UPDATE_SECONDS, instead of a scrolling ticker. */
     #kmn-harvest-panel {
-      margin-top: 14px; background: #0f172a; border-radius: 12px; padding: 12px 16px;
+      margin-top: 14px; background: #0f172a; border-radius: 12px; padding: 10px 16px;
       display: flex; align-items: center; gap: 16px; flex-shrink: 0;
     }
     .kmn-harvest-header { color: #fbbf24; font-weight: 800; font-size: .85rem; white-space: nowrap; }
     #kmn-harvest-counter { color: #94a3b8; font-weight: 600; font-size: .75rem; margin-left: 6px; }
-    #kmn-harvest-viewport { flex: 1; overflow: hidden; position: relative; min-height: 26px; }
+    #kmn-harvest-viewport { flex: 1; overflow: hidden; white-space: nowrap; position: relative; height: 26px; }
     #kmn-harvest-text {
+      position: absolute; top: 0; left: 0; right: 0;
       color: #e2e8f0; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      display: block; opacity: 0; transform: translateY(4px); transition: opacity .4s ease, transform .4s ease;
+      transform: translateX(100%); transition: transform .5s ease-in-out;
     }
-    #kmn-harvest-text.kmn-fade-in { opacity: 1; transform: translateY(0); }
     .kmn-stay-toggle {
       display: flex; align-items: center; gap: 6px; color: #e2e8f0; font-size: .9rem;
       white-space: nowrap; cursor: pointer; user-select: none;
     }
     .kmn-stay-toggle input { width: 16px; height: 16px; cursor: pointer; }
 
-    /* ---- Full Screen mode: expands the whole component (Pond Layout
-       carousel + Harvest Updates) to fill the entire browser window. */
+    /* ---- Full Screen mode: expands the whole component to fill the
+       browser window, with the Pond Layout carousel and the Harvest
+       Updates panel centered in the middle of the page. */
     #kmn-wrap.kmn-fullscreen-mode {
       position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 999999;
-      background: #0b1220; padding: 14px; box-sizing: border-box;
+      background: #0b1220; padding: 24px; box-sizing: border-box;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
-    #kmn-wrap.kmn-fullscreen-mode #kmn-carousel { flex: 1; height: auto; }
+    #kmn-wrap.kmn-fullscreen-mode #kmn-carousel {
+      width: 100%; max-width: 1200px; height: min(76vh, 700px);
+    }
+    #kmn-wrap.kmn-fullscreen-mode #kmn-harvest-panel {
+      width: 100%; max-width: 1200px;
+    }
   </style>
 
   <div id="kmn-carousel">
@@ -672,51 +534,10 @@ _HTML_TEMPLATE = """
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       }
 
-      // ---- Pond Layout card markup -- mirrors the Marketing Manager &
-      // Technician view app's Pond Layout cards field-for-field.
-      function buildPondBoxHtml(p, zoneColor) {
-        const wqIcon = p.wq_special ? '<div class="kmn-wq-icon" title="WQ Special Case">🫨</div>' : '';
-        const wqText = p.wq_special ? '<div class="kmn-wq-text">🫨 ' + escapeHtml(p.wq_special) + '</div>' : '';
-        const speciesHtml = p.species_letter ? '<div class="kmn-species">' + escapeHtml(p.species_letter) + '</div>' : '';
-        const issuesHtml = p.issues ? '<div class="kmn-issues">' + escapeHtml(p.issues) + '</div>' : '';
-
-        let middleHtml;
-        if (p.status === 'Full H') {
-          const totalHtml = p.total_harvest_kg
-            ? '<div class="kmn-subline">Total: ' + escapeHtml(p.total_harvest_kg) + ' KG</div>' : '';
-          middleHtml = '<div class="kmn-status-full">Full H</div>'
-            + '<div class="kmn-subline">Harvest Date - ' + escapeHtml(p.harvest_date || '-') + '</div>'
-            + totalHtml;
-        } else if (p.status === 'Soon to be') {
-          middleHtml = '<div class="kmn-status-soon">Soon to be</div>';
-        } else {
-          const totalHtml = (p.status === 'Partial H' && p.total_harvest_kg)
-            ? '<div class="kmn-subline">Total: ' + escapeHtml(p.total_harvest_kg) + ' KG</div>' : '';
-          middleHtml = '<div class="kmn-doc-today">' + escapeHtml(p.doc_today || '-') + '</div>'
-            + '<div class="kmn-started">' + escapeHtml(p.started_label || '') + '</div>'
-            + totalHtml;
-        }
-
-        const expectHtml = '<div class="kmn-expect"><b>' + escapeHtml(p.expect_label) + ':</b> '
-          + escapeHtml(p.expect_val) + '</div>';
-        const extraHtml = '<div class="kmn-extra">'
-          + '<div>Stocking Density - ' + escapeHtml(p.density) + '</div>'
-          + '<div>L.V.D - ' + escapeHtml(p.lvd) + '</div>'
-          + '<div>Feed/Day - ' + escapeHtml(p.feed_day) + ' &nbsp;|&nbsp; ABW - ' + escapeHtml(p.abw) + '</div>'
-          + '</div>';
-
-        return '<div class="kmn-pond-card">'
-          + '<div class="kmn-pond-box" style="background:' + p.color + '; border-color:' + zoneColor + ';">'
-          + wqIcon
-          + '<div class="kmn-pond-label">Pond ' + escapeHtml(p.pond_no) + '</div>'
-          + middleHtml
-          + expectHtml
-          + extraHtml
-          + issuesHtml
-          + '</div>'
-          + speciesHtml
-          + wqText
-          + '</div>';
+      // ---- Each zone gets its own tinted slide background (in addition
+      // to the zone badge), so different zones are visually distinct.
+      function zoneSlideBackground(zoneColor) {
+        return 'linear-gradient(165deg, ' + zoneColor + '55 0%, #0f172a 62%)';
       }
 
       function renderSlides() {
@@ -725,8 +546,15 @@ _HTML_TEMPLATE = """
           return;
         }
         slidesEl.innerHTML = farms.map(function (f, i) {
-          const ponds = f.ponds.map(function (p) { return buildPondBoxHtml(p, f.zone_color); }).join('');
-          return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
+          const ponds = f.ponds.map(function (p) {
+            return '<div class="kmn-pond-box" style="background:' + p.color + '; border-color:' + f.zone_color + ';">'
+              + '<div class="kmn-pond-label">Pond ' + escapeHtml(p.pond_no) + '</div>'
+              + '<div class="kmn-pond-doc">' + escapeHtml(p.display) + '</div>'
+              + '<div class="kmn-pond-status">' + escapeHtml(p.status) + '</div>'
+              + '</div>';
+          }).join('');
+          return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '" '
+            + 'style="background:' + zoneSlideBackground(f.zone_color) + ';">'
             + '<div class="kmn-slide-header">'
             + '<div class="kmn-zone-badge" style="background:' + f.zone_color + ';">Zone ' + escapeHtml(f.zone || '-') + '</div>'
             + '<div class="kmn-farm-name">' + escapeHtml(f.farm) + '</div>'
@@ -741,12 +569,26 @@ _HTML_TEMPLATE = """
         }).join('');
       }
 
-      function goTo(index) {
+      // ---- Slide-in-from-the-right transition: the incoming slide
+      // moves from off-screen right to center, the outgoing slide moves
+      // off-screen to the left. No fade/opacity involved.
+      function goTo(newIndex) {
         const slides = slidesEl.querySelectorAll('.kmn-slide');
         const dots = dotsEl.querySelectorAll('.kmn-dot');
-        slides.forEach(function (s, i) { s.classList.toggle('active', i === index); });
-        dots.forEach(function (d, i) { d.classList.toggle('active', i === index); });
-        current = index;
+        slides.forEach(function (s, i) {
+          if (i === newIndex) {
+            s.classList.remove('leaving');
+            s.classList.add('active');
+          } else if (i === current) {
+            s.classList.remove('active');
+            s.classList.add('leaving');
+            setTimeout(function () { s.classList.remove('leaving'); }, 650);
+          } else {
+            s.classList.remove('active', 'leaving');
+          }
+        });
+        dots.forEach(function (d, i) { d.classList.toggle('active', i === newIndex); });
+        current = newIndex;
       }
 
       function nextSlide() {
@@ -759,20 +601,23 @@ _HTML_TEMPLATE = """
         carouselTimer = setInterval(nextSlide, carouselSeconds * 1000);
       }
 
-      // ---- Harvest Updates: shows one item at a time, fading in, and
-      // advances to the next item every harvestUpdateSeconds.
+      // ---- Harvest Updates: one item at a time, sliding in from the
+      // right (no fade), advancing every harvestUpdateSeconds.
       function renderHarvestItem() {
         if (!ticker.length) {
+          harvestTextEl.style.transition = 'none';
+          harvestTextEl.style.transform = 'translateX(0)';
           harvestTextEl.textContent = 'No harvest activity recorded yet.';
           harvestCounterEl.textContent = '';
-          harvestTextEl.classList.add('kmn-fade-in');
           return;
         }
-        harvestTextEl.classList.remove('kmn-fade-in');
-        void harvestTextEl.offsetWidth; // restart the fade-in transition
+        harvestTextEl.style.transition = 'none';
+        harvestTextEl.style.transform = 'translateX(100%)';
         harvestTextEl.textContent = ticker[harvestIndex];
         harvestCounterEl.textContent = ' (' + (harvestIndex + 1) + ' / ' + ticker.length + ')';
-        requestAnimationFrame(function () { harvestTextEl.classList.add('kmn-fade-in'); });
+        void harvestTextEl.offsetWidth; // force reflow so the transition below actually runs
+        harvestTextEl.style.transition = 'transform .5s ease-in-out';
+        requestAnimationFrame(function () { harvestTextEl.style.transform = 'translateX(0)'; });
       }
 
       function nextHarvestItem() {
@@ -793,10 +638,10 @@ _HTML_TEMPLATE = """
       });
 
       // ---- Full Screen: expands the whole component to fill the
-      // browser window. Resizes the actual Streamlit component iframe
-      // (same-origin, via window.frameElement) so it behaves like a true
-      // full-screen kiosk view; also makes a best-effort attempt at the
-      // browser's native Fullscreen API.
+      // browser window, centered. Resizes the actual Streamlit component
+      // iframe (same-origin, via window.frameElement) so it behaves like
+      // a true full-screen kiosk view; also makes a best-effort attempt
+      // at the browser's native Fullscreen API.
       function enterFullscreen() {
         isFullscreen = true;
         wrapEl.classList.add('kmn-fullscreen-mode');
@@ -872,7 +717,7 @@ _html = (
     .replace("__DATA_REFRESH_SECONDS__", json.dumps(DATA_REFRESH_SECONDS))
 )
 
-components.html(_html, height=760, scrolling=False)
+components.html(_html, height=680, scrolling=False)
 
 st.markdown("---")
 st.markdown(
