@@ -675,10 +675,14 @@ _HTML_TEMPLATE = """
        Pond Layout grid -- distinct from the dimmed full-slide background
        image above, which stays exactly as it was. */
     .kmn-location-thumb-wrap { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
-    .kmn-location-thumb {
-      width: 220px; height: 150px; object-fit: cover; border-radius: 10px;
+    .kmn-location-thumb-frame {
+      position: relative; width: 220px; height: 150px; border-radius: 10px; overflow: hidden;
       border: 2px solid rgba(255,255,255,.35); box-shadow: 0 4px 14px rgba(0,0,0,.35);
     }
+    .kmn-location-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    /* Draws the farm's boundary/marker on top of the thumbnail, aligned
+       pixel-for-pixel with the image via a matching viewBox. */
+    .kmn-location-thumb-outline { position: absolute; inset: 0; width: 100%; height: 100%; }
     .kmn-location-caption { margin-top: 5px; font-size: .75rem; color: #e2e8f0; font-weight: 600; }
     .kmn-empty { color: #94a3b8; font-size: 1.2rem; margin-top: 60px; text-align: center; }
     .kmn-dots { position: absolute; bottom: 14px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; }
@@ -830,9 +834,36 @@ _HTML_TEMPLATE = """
           // NEW: a small, sharp "exact location" thumbnail shown after the
           // Pond Layout grid -- separate from the dimmed full-slide
           // background above, and only added when a location was found.
+          // Draws the farm's actual polygon boundary (or a marker dot for
+          // a plain point) directly on top of this thumbnail, in image
+          // pixel-space, so it lines up exactly with the crop used.
+          let locationOutlineHtml = '';
+          if (f.map_image && f.map_bbox) {
+            const minLon = f.map_bbox[0], minLat = f.map_bbox[1], maxLon = f.map_bbox[2], maxLat = f.map_bbox[3];
+            const lonSpan = (maxLon - minLon) || 1;
+            const latSpan = (maxLat - minLat) || 1;
+            const toX = function (lon) { return ((lon - minLon) / lonSpan) * __MAP_IMAGE_WIDTH__; };
+            const toY = function (lat) { return ((maxLat - lat) / latSpan) * __MAP_IMAGE_HEIGHT__; };
+            if (f.map_polygon && f.map_polygon.length > 2) {
+              const pts = f.map_polygon.map(function (p) { return toX(p[1]) + ',' + toY(p[0]); }).join(' ');
+              locationOutlineHtml =
+                '<svg class="kmn-location-thumb-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
+                + '<polygon points="' + pts + '" fill="rgba(250,204,21,.15)" stroke="#facc15" stroke-width="8" stroke-linejoin="round" />'
+                + '</svg>';
+            } else {
+              const cx = __MAP_IMAGE_WIDTH__ / 2, cy = __MAP_IMAGE_HEIGHT__ / 2;
+              locationOutlineHtml =
+                '<svg class="kmn-location-thumb-outline" viewBox="0 0 __MAP_IMAGE_WIDTH__ __MAP_IMAGE_HEIGHT__" preserveAspectRatio="xMidYMid slice">'
+                + '<circle cx="' + cx + '" cy="' + cy + '" r="20" fill="rgba(250,204,21,.25)" stroke="#facc15" stroke-width="6" />'
+                + '</svg>';
+            }
+          }
           const locationThumbHtml = f.map_image
             ? '<div class="kmn-location-thumb-wrap">'
-              + '<img class="kmn-location-thumb" src="' + f.map_image + '" alt="Farm location" onerror="this.parentElement.remove();" />'
+              + '<div class="kmn-location-thumb-frame">'
+              + '<img class="kmn-location-thumb" src="' + f.map_image + '" alt="Farm location" onerror="this.closest(\'.kmn-location-thumb-wrap\').remove();" />'
+              + locationOutlineHtml
+              + '</div>'
               + '<div class="kmn-location-caption">📍 Farm Location</div>'
               + '</div>'
             : '';
