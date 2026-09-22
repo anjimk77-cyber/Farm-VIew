@@ -103,7 +103,7 @@ MAP_IMAGE_HEIGHT = 600
 MAP_IMAGE_SIZE = f"{MAP_IMAGE_WIDTH},{MAP_IMAGE_HEIGHT}"
 # Extra padding (in degrees) added around a farm's own polygon boundary so
 # the outline isn't cropped flush against the image edge.
-MAP_POLYGON_PADDING_DEG = 0.0004
+MAP_POLYGON_PADDING_DEG = 0.0012
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
 st.subheader("🎡 Running Farms — Live Display")
@@ -276,8 +276,16 @@ def build_map_image_url(lat, lon, polygon=None):
     if polygon:
         lats = [p[0] for p in polygon]
         lons = [p[1] for p in polygon]
-        min_lat, max_lat = min(lats) - MAP_POLYGON_PADDING_DEG, max(lats) + MAP_POLYGON_PADDING_DEG
-        min_lon, max_lon = min(lons) - MAP_POLYGON_PADDING_DEG, max(lons) + MAP_POLYGON_PADDING_DEG
+        lat_span = max(lats) - min(lats)
+        lon_span = max(lons) - min(lons)
+        # Pad generously (40% of the shape's own extent on each side, with
+        # a floor for tiny/thin polygons) so the boundary sits comfortably
+        # inside the frame with breathing room, instead of touching --
+        # or nearly filling -- the image edges.
+        pad_lat = max(lat_span * 0.4, MAP_POLYGON_PADDING_DEG)
+        pad_lon = max(lon_span * 0.4, MAP_POLYGON_PADDING_DEG)
+        min_lat, max_lat = min(lats) - pad_lat, max(lats) + pad_lat
+        min_lon, max_lon = min(lons) - pad_lon, max(lons) + pad_lon
     else:
         min_lon, max_lon = lon - MAP_BBOX_SPAN_DEG, lon + MAP_BBOX_SPAN_DEG
         min_lat, max_lat = lat - MAP_BBOX_SPAN_DEG, lat + MAP_BBOX_SPAN_DEG
