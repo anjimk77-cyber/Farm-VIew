@@ -511,10 +511,67 @@ def build_running_farms(df):
 # instead of one combined Pond Layout per farm, each farm's latest-per-
 # pond records are split into a Vannamei Ponds list and a Monodon Ponds
 # list (by Species Culture), so the table below can show them side by
-# side. Each pond keeps the same status/color, DOC Today, Issues and WQ
-# Special Cases fields used across this app family (ported from the
-# Marketing Manager app's Pond Layout cards).
+# side. Each pond card below is ported directly from the Marketing
+# Manager app's own Pond Layout cards (box color, DOC Today / Started on
+# / Full H / Soon to be, Stocking Density, L.V.D, Feed/Day, ABW,
+# Expecting Harvest / Harvest Weight, Total Harvest KG, Issues, species
+# letter, and the WQ Special Cases icon + caption) rather than a
+# simplified box, so this section looks and behaves the same as that
+# reference.
 # =========================================================================
+def _farm_zone_zw(customer, farm):
+    """Same lookup as _farm_zone() above, used ONLY by this Zone wise
+    section (the carousel keeps using the original _farm_zone()
+    untouched). Matches Customer Name / Farm Name with Code with
+    whitespace trimmed and case-insensitively, so a farm whose Google
+    Sheet spelling differs from 'Customer List.xlsx' only by case or a
+    stray space still resolves to its Zone here instead of showing up
+    with no zone."""
+    customer_norm = str(customer).strip().lower()
+    farm_norm = str(farm).strip().lower()
+    match = customer_df[
+        (customer_df["Customer Name"].astype(str).str.strip().str.lower() == customer_norm)
+        & (customer_df["Farm Name with Code"].astype(str).str.strip().str.lower() == farm_norm)
+    ]
+    if len(match) > 0:
+        return str(match.iloc[0].get("Zone", "")).strip()
+    return ""
+
+def _zw_parse_harvest_kg(raw_value):
+    """Same combined-harvest parser as the Marketing Manager app's Pond
+    Layout section: a Harvest KG value entered as a combined total across
+    several ponds harvested together, e.g. '2000 (2)' (2000 kg split
+    across 2 ponds), is turned into that pond's PER-POND share
+    (2000 / 2 = 1000). A plain numeric value is returned as-is."""
+    s = str(raw_value).strip()
+    if not s:
+        return float("nan")
+    m = re.match(r"^([\d,]+(?:\.\d+)?)\s*\(\s*(\d+)\s*\)\s*$", s)
+    if m:
+        total = pd.to_numeric(m.group(1).replace(",", ""), errors="coerce")
+        count = pd.to_numeric(m.group(2), errors="coerce")
+        if pd.notna(total) and pd.notna(count) and count > 0:
+            return total / count
+        return float("nan")
+    return pd.to_numeric(s.replace(",", ""), errors="coerce")
+
+def _zw_harvest_kg_sum_row(row):
+    """Same per-row harvest-KG summing rule as the Marketing Manager
+    app's Pond Layout section: adds Harvest KG (slot 1) whenever that
+    slot's own Harvest Type is filled in, and Harvest KG 2 (slot 2)
+    whenever ITS Harvest Type 2 is filled in -- a KG value with no Type
+    text is skipped."""
+    row_total = 0.0
+    t1 = str(row.get("Harvest Type", "")).strip()
+    kg1 = _zw_parse_harvest_kg(row.get("Harvest KG", ""))
+    if t1 and pd.notna(kg1):
+        row_total += kg1
+    t2 = str(row.get("Harvest Type 2", "")).strip()
+    kg2 = _zw_parse_harvest_kg(row.get("Harvest KG 2", ""))
+    if t2 and pd.notna(kg2):
+        row_total += kg2
+    return row_total
+
 def build_zone_wise_running_farms(df):
     required = {"Customer", "Farm Name with Code", "Pond Number", "Date", "Harvest Type", "Harvest Type 2"}
     if len(df) == 0 or not required.issubset(df.columns):
@@ -547,6 +604,17 @@ def build_zone_wise_running_farms(df):
     latest_per_pond["_Status"] = latest_per_pond.apply(lambda r: _pond_status(r, r["_HasPartial"]), axis=1)
     latest_per_pond["_DocToday"] = latest_per_pond.apply(_doc_today, axis=1)
 
+    # Total Harvest KG per pond -- summed across EVERY saved record for
+    # that pond (not just its latest one), same rule + parser as the
+    # Marketing Manager app's Pond Layout "Total: X KG" line, so a pond
+    # that had one or more Partial H harvests and then later a Full H
+    # harvest gets both added together here too.
+    total_harvest_kg_by_pond = (
+        work.assign(_HarvestKGRow=work.apply(_zw_harvest_kg_sum_row, axis=1))
+        .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HarvestKGRow"]
+        .sum()
+    )
+
     farms = []
     for (customer, farm), group in latest_per_pond.groupby(["Customer", "Farm Name with Code"]):
         total_ponds = group["Pond Number"].nunique()
@@ -554,29 +622,33 @@ def build_zone_wise_running_farms(df):
         if total_ponds > 0 and full_h_ponds >= total_ponds:
             continue  # every pond on this farm is Full H -- not "Running"
 
-        zone = _farm_zone(customer, farm)
+        zone = _farm_zone_zw(customer, farm)
         vannamei_ponds, monodon_ponds = [], []
         for _, prow in group.sort_values("Pond Number").iterrows():
-            status = prow["_Status"]
-            doc_val = prow["_DocToday"]
-            if status == "Full H":
-                display = "H"
-            elif status == "Soon to be":
-                display = "-"
-            else:
-                display = str(doc_val) if doc_val is not None else "-"
+            pond_no = prow.get("Pond Number", "")
             pond = {
-                "pond_no": str(prow.get("Pond Number", "")),
-                "status": status,
-                "display": display,
-                "color": _pond_color(status),
+                "pond_no": str(pond_no),
+                "status": prow["_Status"],
+                "doc_today": prow["_DocToday"],
+                "density": prow.get("Density", ""),
+                "lvd_date": prow.get("Date", ""),
+                "feed_per_day": prow.get("Feed Per Day", ""),
+                "abw": prow.get("ABW", ""),
+                "expect_harvest_kg": prow.get("Expect Harvest (KG)", ""),
+                "harvest_type": prow.get("Harvest Type", ""),
+                "harvest_type2": prow.get("Harvest Type 2", ""),
+                "harvest_date": prow.get("Harvest Date", ""),
+                "harvest_date2": prow.get("Harvest Date 2", ""),
+                "harvest_kg": prow.get("Harvest KG", ""),
+                "harvest_kg2": prow.get("Harvest KG 2", ""),
+                "total_harvest_kg": total_harvest_kg_by_pond.get((customer, farm, pond_no), 0),
                 "issues": str(prow.get("Issues", "")).strip(),
                 "wq_special": str(prow.get("WQ Special Cases", "")).strip(),
+                "species": _species_letter(prow.get("Species Culture", "")),
             }
-            species = _species_letter(prow.get("Species Culture", ""))
-            if species == "V":
+            if pond["species"] == "V":
                 vannamei_ponds.append(pond)
-            elif species == "M":
+            elif pond["species"] == "M":
                 monodon_ponds.append(pond)
             # Ponds whose Species Culture is neither Vannamei nor Monodon
             # (blank/unrecognized) simply aren't shown in either column,
@@ -1122,31 +1194,152 @@ components.html(_html, height=680, scrolling=False)
 def _escape_html_zw(v):
     return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+def _zw_pond_box_color(status):
+    """Same box-color mapping as the Marketing Manager app's Pond Layout
+    section's _pond_box_color(): yellow = Partial H, green = Full H,
+    gray = Soon to be, blue = Running (default)."""
+    return {
+        "Partial H": "#fff3cd",
+        "Full H": "#d4edda",
+        "Soon to be": "#e2e2e2",
+    }.get(status, "#eaf4ff")
+
 def _render_zone_wise_pond_box(p):
+    """Renders one pond card using the EXACT same layout, fields and
+    rules as the Marketing Manager app's Pond Layout section (box color,
+    DOC Today + 'Started on' date / Full H + Harvest Date / Soon to be,
+    Total Harvest KG, Expecting Harvest / Harvest Weight, Stocking
+    Density, L.V.D, Feed/Day, ABW, Issues, species letter, and the WQ
+    Special Cases icon + caption) -- ported field-for-field from that
+    reference rather than a simplified box."""
+    status = p["status"]
+    box_color = _zw_pond_box_color(status)
+
+    wq_special_val = p["wq_special"]
     wq_icon_html = (
-        "<div style='position:absolute;top:2px;right:4px;font-size:.85rem;line-height:1;' "
+        "<div style='position:absolute;top:2px;right:4px;font-size:1.2rem;line-height:1;' "
         "title='WQ Special Case'>🫨</div>"
-        if p["wq_special"] else ""
-    )
-    issues_html = (
-        f"<div style='font-size:.62rem;font-weight:700;color:#b91c1c;text-align:center;"
-        f"margin-top:3px;padding:0 3px;line-height:1.2;'>{_escape_html_zw(p['issues'])}</div>"
-        if p["issues"] else ""
+        if wq_special_val else ""
     )
     wq_caption_html = (
-        f"<div style='font-size:.62rem;color:#b45309;text-align:center;margin-top:2px;"
-        f"line-height:1.2;padding:0 3px;'>🫨 {_escape_html_zw(p['wq_special'])}</div>"
-        if p["wq_special"] else ""
+        f"<div style='font-size:0.8rem;color:#b45309;text-align:center;max-width:190px;"
+        f"margin-top:2px;'>🫨 {_escape_html_zw(wq_special_val)}</div>"
+        if wq_special_val else ""
     )
+
+    # ---- Stocking Density, L.V.D (this pond's own saved Date), Feed/Day,
+    # ABW -- same detail lines as the reference's pond cards.
+    density_val = pd.to_numeric(p.get("density", ""), errors="coerce")
+    density_str = f"{density_val:,.0f}" if pd.notna(density_val) else "-"
+    lvd_str = _escape_html_zw(str(p.get("lvd_date", "")).strip() or "-")
+    feed_day_str = _escape_html_zw(p.get("feed_per_day", "") or "-")
+    abw_str = _escape_html_zw(p.get("abw", "") or "-")
+    extra_details_html = (
+        "<div style='font-size:0.85rem;color:#333;text-align:left;width:100%;"
+        "padding:0 8px;margin-top:4px;line-height:1.4;'>"
+        f"<div>Stocking Density - {density_str}</div>"
+        f"<div>L.V.D - {lvd_str}</div>"
+        f"<div>Feed/Day - {feed_day_str} &nbsp;|&nbsp; ABW - {abw_str}</div>"
+        "</div>"
+    )
+
+    # ---- Issues (this pond's latest saved record), shown at the bottom
+    # of the card in red -- same as the reference.
+    issues_val = str(p.get("issues", "")).strip()
+    issues_html = (
+        "<div style='margin-top:auto;width:100%;text-align:center;font-size:0.85rem;"
+        "font-weight:bold;border-top:1px dashed #bbb;padding-top:3px;'>"
+        f"<span style='color:red;'>{_escape_html_zw(issues_val)}</span></div>"
+        if issues_val and issues_val.lower() != "nan" else ""
+    )
+
+    total_kg = p.get("total_harvest_kg", 0) or 0
+
+    if status == "Full H":
+        # Full H: "Full H" + its Harvest Date, plus Total Harvest KG
+        # (all harvests summed for this pond) instead of DOC Today.
+        h_date = str(p.get("harvest_date2", "")).strip() or str(p.get("harvest_date", "")).strip()
+        h_date = _escape_html_zw(h_date or "-")
+        total_kg_html = (
+            f"<div style='font-size:0.75rem;color:#333;'>Total: {total_kg:,.2f} KG</div>" if total_kg else ""
+        )
+        box_middle_html = (
+            "<div style='font-size:1.2rem;font-weight:bold;color:red;'>Full H</div>"
+            f"<div style='font-size:0.75rem;color:#333;'>Harvest Date - {h_date}</div>"
+            f"{total_kg_html}"
+        )
+    elif status == "Soon to be":
+        box_middle_html = "<div style='font-size:1.1rem;font-weight:bold;color:#555;'>Soon to be</div>"
+    else:
+        # Running / Partial H: DOC Today (red, large) + "Started on
+        # <date>" below it; Partial H additionally shows Total Harvest
+        # KG (Running has no harvest yet, so this stays blank for it).
+        if status == "Partial H":
+            total_kg_html = (
+                f"<div style='font-size:0.7rem;color:#333;'>Total: {total_kg:,.2f} KG</div>" if total_kg else ""
+            )
+        else:
+            total_kg_html = ""
+
+        doc_today_raw = p.get("doc_today", "")
+        doc_today_val = _escape_html_zw(doc_today_raw if doc_today_raw is not None else "-")
+        try:
+            started_date = (
+                pd.Timestamp(date.today()) - pd.Timedelta(days=int(float(doc_today_raw)))
+            ).strftime("%Y-%m-%d")
+            started_label = f"Started on {started_date}"
+        except (TypeError, ValueError):
+            started_label = "Started on ---"
+        box_middle_html = (
+            f"<div style='font-size:1.4rem;font-weight:bold;color:red;'>{doc_today_val}</div>"
+            f"<div style='font-size:0.7rem;color:#777;'>{_escape_html_zw(started_label)}</div>"
+            f"{total_kg_html}"
+        )
+
+    # ---- Expecting Harvest (KG) / Harvest Weight line -- same label
+    # switch and "2nd slot wins" rule as the reference.
+    if status == "Full H":
+        t2_lower = str(p.get("harvest_type2", "")).strip().lower()
+        kg2 = _zw_parse_harvest_kg(p.get("harvest_kg2", ""))
+        kg1 = _zw_parse_harvest_kg(p.get("harvest_kg", ""))
+        harvest_kg_val = kg2 if ("full" in t2_lower and pd.notna(kg2)) else kg1
+        expect_label = "Harvest Weight"
+        expect_val = f"{harvest_kg_val:,.2f} KG" if pd.notna(harvest_kg_val) else "-"
+    elif status == "Soon to be":
+        expect_label = "Expecting Harvest"
+        expect_val = "-"
+    else:
+        expect_label = "Expecting Harvest"
+        expect_kg = pd.to_numeric(p.get("expect_harvest_kg", ""), errors="coerce")
+        expect_val = f"{expect_kg:,.2f} KG" if pd.notna(expect_kg) else "-"
+
+    expect_html = (
+        "<div style='font-size:0.85rem;color:#333;text-align:center;width:100%;margin-top:4px;"
+        "border-top:1px dashed #bbb;padding-top:3px;'>"
+        f"<b>{expect_label}:</b> {_escape_html_zw(expect_val)}</div>"
+    )
+
+    species_label = p.get("species", "")
+    species_html = (
+        f"<div style='font-size:0.75rem;font-weight:bold;color:#444;margin-top:2px;'>{_escape_html_zw(species_label)}</div>"
+        if species_label else ""
+    )
+
+    # ---- Card shell: same 210px x 175px card, border and padding as the
+    # reference's Pond Layout cards.
     return (
-        "<div style='position:relative;display:inline-flex;flex-direction:column;align-items:center;"
-        "justify-content:center;width:96px;min-height:82px;margin:4px;border:2px solid #33415580;"
-        f"border-radius:10px;background:{p['color']};vertical-align:top;box-shadow:0 2px 6px rgba(0,0,0,.15);'>"
+        "<div style='display:inline-flex;flex-direction:column;align-items:center;margin:6px;vertical-align:top;'>"
+        "<div style='position:relative;width:210px;min-height:175px;border:2px solid #333;"
+        "border-radius:6px;display:flex;flex-direction:column;align-items:center;"
+        f"justify-content:flex-start;padding:8px 0;background:{box_color};'>"
         f"{wq_icon_html}"
-        f"<div style='font-size:.65rem;font-weight:600;color:#0f172a;'>Pond {_escape_html_zw(p['pond_no'])}</div>"
-        f"<div style='font-size:1.1rem;font-weight:800;color:#0f172a;margin:2px 0;'>{_escape_html_zw(p['display'])}</div>"
-        f"<div style='font-size:.6rem;font-weight:700;color:#0f172a;'>{_escape_html_zw(p['status'])}</div>"
+        f"<div style='font-size:0.8rem;color:#555;'>Pond {_escape_html_zw(p['pond_no'])}</div>"
+        f"{box_middle_html}"
+        f"{expect_html}"
+        f"{extra_details_html}"
         f"{issues_html}"
+        "</div>"
+        f"{species_html}"
         f"{wq_caption_html}"
         "</div>"
     )
@@ -1161,9 +1354,15 @@ def render_zone_wise_section(zone_wise_farms):
     for f in zone_wise_farms:
         if f["zone"] != current_zone:
             current_zone = f["zone"]
+            # A farm whose Customer Name / Farm Name with Code couldn't be
+            # matched against 'Customer List.xlsx' (see _farm_zone_zw()
+            # above) has no Zone -- labelled "Unassigned" here instead of
+            # a blank header, so it's still grouped and visible rather
+            # than silently disappearing from the table.
+            zone_label = current_zone if current_zone else "Unassigned"
             rows_html += (
                 "<tr><td colspan='3' style='background:#1e293b;color:#f8fafc;font-weight:800;"
-                f"font-size:.85rem;padding:8px 14px;'>Zone {_escape_html_zw(current_zone or '-')}</td></tr>"
+                f"font-size:.85rem;padding:8px 14px;'>Zone: {_escape_html_zw(zone_label)}</td></tr>"
             )
         vannamei_html = (
             "".join(_render_zone_wise_pond_box(p) for p in f["vannamei_ponds"])
@@ -1202,10 +1401,12 @@ st.subheader("🗺️ Zone wise Running Farms — Live Display")
 zone_wise_farms = build_zone_wise_running_farms(df)
 render_zone_wise_section(zone_wise_farms)
 st.caption(
-    f"{len(zone_wise_farms)} running farm(s) shown, grouped by Zone • "
-    "V/M columns list only that farm's Vannamei / Monodon ponds • "
-    "box color = pond status (blue = Running, yellow = Partial H, green = Full H, gray = Soon to be) • "
-    "number = DOC Today"
+    f"{len(zone_wise_farms)} running farm(s) shown, grouped by Zone (farms with no matching Zone in "
+    "'Customer List.xlsx' are grouped under 'Zone: Unassigned') • V/M columns list only that farm's "
+    "Vannamei / Monodon ponds • box color = pond status (blue = Running, yellow = Partial H, "
+    "green = Full H, gray = Soon to be) • each card shows DOC Today / Started on date, Expecting "
+    "Harvest or Harvest Weight, Stocking Density, L.V.D, Feed/Day, ABW, Issues and WQ Special Cases — "
+    "same fields as the Marketing Manager app's Pond Layout cards"
 )
 
 st.markdown("---")
