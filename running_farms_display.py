@@ -18,45 +18,39 @@ from google.oauth2.service_account import Credentials
 # Manager & Technician view). It performs NO writes to the Google Sheet.
 #
 # What it shows:
-#   1) An auto-rotating carousel (one farm per slide, sliding in from the
-#      right every CAROUSEL_SECONDS) of every Customer + Farm that is
+#   1) A carousel (one farm per slide) of every Customer + Farm that is
 #      currently "Running" (i.e. NOT every pond on that farm is at Full
 #      Harvest) -- Customer Name, Farm Name with Code, and that farm's
 #      Pond Layout. Each slide's background is tinted with a color for
 #      that farm's Zone (from Customer List.xlsx), and each pond box
 #      keeps the same status colors used across this app family (blue =
 #      Running, yellow = Partial H, green = Full H, gray = Soon to be).
-#      NEW: behind that zone tint, each slide also shows a blurred
-#      satellite snapshot of the farm's actual map location (pulled
-#      from the same Locations Google Sheet the "Farm Map" app uses),
-#      so the display gives a sense of place without competing with the
-#      Pond Layout content on top of it. Farms with no matching location
-#      simply fall back to the existing zone-tint-only background.
-#   2) A "Harvest Updates" panel that shows recent Harvest Details ONE AT
-#      A TIME, sliding in from the right every HARVEST_UPDATE_SECONDS,
-#      e.g.:
-#      "Wasantha Pathmakumara -C00876 Madurankuliya Farm Partial H from
-#       Pond No 1 - 1100 KG with 10 ABW at 2026/09/19"
-#   3) A "Stay" tick box that freezes BOTH the carousel and the Harvest
-#      Updates panel in place (and pauses the page's periodic data
-#      refresh) so a viewer can read one slide/item without it moving on.
-#   4) A "⛶ Full Screen" button that expands the whole display to fill
-#      the entire browser window -- while in Full Screen, the Pond
-#      Layout carousel and the Harvest Updates panel are centered in the
-#      middle of the page.
-#   5) NEW: a "Zone wise Running Farms - Live Display" section (below
-#      the carousel + Harvest Updates panel) -- a plain, non-rotating
-#      table, grouped by Zone, listing every currently Running farm with
-#      its Vannamei Ponds and Monodon Ponds laid out side by side, each
-#      pond box using the same status colors, DOC Today values, Issues
-#      and WQ Special Cases shown elsewhere in this app family.
+#      Behind that zone tint, each slide also shows a blurred satellite
+#      snapshot of the farm's actual map location (pulled from the same
+#      Locations Google Sheet the "Farm Map" app uses). Farms with no
+#      matching location simply fall back to the zone-tint-only
+#      background.
+#      CHANGED: the display now OPENS IN FULL SCREEN by default, has a
+#      Zone selector (All Zones / one Zone), and the slides move ONLY
+#      with the Back / Next buttons (or swipe / arrow keys) -- there is no
+#      automatic rotation any more. It is also phone-friendly.
+#   2) CHANGED: the old "Harvest Updates" line was removed. In its place
+#      a control bar shows the Active Farms count for the selected Zone
+#      ("Active Farms in Zone X: N"), or "All Running Farms: N" when no
+#      Zone is selected, between the Back and Next buttons.
+#   3) A "⛶ Full Screen" / "Exit Full Screen" button in the top bar.
+#   4) A "Zone wise Running Farms - Live Display" section (below the
+#      carousel) -- a plain, non-rotating table, grouped by Zone, listing
+#      every currently Running farm with its Vannamei Ponds and Monodon
+#      Ponds laid out side by side, each pond box using the same status
+#      colors, DOC Today values, Issues and WQ Special Cases shown
+#      elsewhere in this app family.
 #
-# All of the carousel/rotation/full-screen behaviour runs client-side in
-# a single self-contained HTML/CSS/JS component
+# All of the carousel/zone/full-screen behaviour runs client-side in a
+# single self-contained HTML/CSS/JS component
 # (streamlit.components.v1.html) -- Python only computes the data once
-# per page load/refresh. The NEW Zone wise section below it is plain
-# server-rendered HTML (st.markdown), not part of that component, since
-# it doesn't rotate or animate.
+# per page load/refresh. The Zone wise section below it is plain
+# server-rendered HTML (st.markdown), not part of that component.
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
 
@@ -76,9 +70,12 @@ COLUMN_ORDER = [
     "Deleted",
 ]
 
-# ---- Display timing (seconds) -- tweak these to taste.
-CAROUSEL_SECONDS = 4          # how long each farm's Pond Layout slide stays on screen
-HARVEST_UPDATE_SECONDS = 5    # how long each Harvest Updates item stays on screen
+# ---- Display timing (seconds).
+# NOTE: CAROUSEL_SECONDS and HARVEST_UPDATE_SECONDS are no longer used
+# (slides now move only with Back / Next; the Harvest Updates line was
+# removed). They are left here untouched.
+CAROUSEL_SECONDS = 4          # (unused) how long each farm's Pond Layout slide stayed on screen
+HARVEST_UPDATE_SECONDS = 5    # (unused) how long each Harvest Updates item stayed on screen
 DATA_REFRESH_SECONDS = 2000    # how often the whole page reloads to pull fresh sheet data
 
 # ---- Zone color palette -- cycles if there are more zones than colors.
@@ -91,7 +88,7 @@ _CUSTOMER_CODE_COLUMN_CANDIDATES = [
     "Customer Code", "Customer ID", "Customer Code with Code", "Code", "Cust Code",
 ]
 
-# ---- NEW: Farm location lookup (same public "Locations" Google Sheet the
+# ---- Farm location lookup (same public "Locations" Google Sheet the
 # "Farm Map" app in this family reads -- Customer ID / Customer Name /
 # Farm Name / Location, where Location is either "lat, lon" or a WKT
 # Polygon string). Used ONLY to fetch a static satellite snapshot for the
@@ -148,10 +145,10 @@ def load_data():
         df["Harvest Status"] = ""
     if "Harvest Status 2" not in df.columns:
         df["Harvest Status 2"] = ""
-    # NEW -- "WQ Special Cases" already exists as its own column in the
-    # Sheet (outside COLUMN_ORDER, same pattern as Harvest Status), kept
-    # here so the Pond Layout carousel below can flag a pond whose latest
-    # record has text in this column, same as the Marketing Manager app.
+    # "WQ Special Cases" already exists as its own column in the Sheet
+    # (outside COLUMN_ORDER, same pattern as Harvest Status), kept here so
+    # the Pond Layout carousel below can flag a pond whose latest record
+    # has text in this column, same as the Marketing Manager app.
     if "WQ Special Cases" not in df.columns:
         df["WQ Special Cases"] = ""
     if len(df) > 0:
@@ -199,7 +196,7 @@ for _col in REQUIRED_COLS:
     )
 
 # =========================================================================
-# NEW -- LOAD FARM LOCATIONS (for the blurred slide background only)
+# LOAD FARM LOCATIONS (for the blurred slide background only)
 #
 # Ported from the "Farm Map" app's own loader/parser so a farm's point
 # (or polygon centroid) can be turned into a small satellite snapshot.
@@ -435,8 +432,8 @@ def build_running_farms(df):
     ]
     zone_colors = build_zone_colors(zones_seen)
 
-    # NEW -- code + location lookups, used only to attach an (optional)
-    # blurred satellite background image per farm below.
+    # Code + location lookups, used only to attach an (optional) blurred
+    # satellite background image per farm below.
     code_lookup = _customer_code_lookup()
     farm_location_lookup = build_farm_location_lookup()
 
@@ -463,15 +460,15 @@ def build_running_farms(df):
                 "status": status,
                 "display": display,
                 "color": _pond_color(status),
-                # NEW -- same fields the Marketing Manager app's Pond
-                # Layout cards show: species letter (V/M), a WQ Special
-                # Cases flag/note, and that pond's latest Issues text.
+                # Same fields the Marketing Manager app's Pond Layout
+                # cards show: species letter (V/M), a WQ Special Cases
+                # flag/note, and that pond's latest Issues text.
                 "species": _species_letter(prow.get("Species Culture", "")),
                 "wq_special": str(prow.get("WQ Special Cases", "")).strip(),
                 "issues": str(prow.get("Issues", "")).strip(),
             })
 
-        # NEW -- resolve this farm's map background image, if a matching
+        # Resolve this farm's map background image, if a matching
         # location exists. Failure here (no code, no match, bad coords)
         # just leaves map_image empty and the slide falls back to the
         # existing zone-tint-only background. When the location is a
@@ -503,8 +500,8 @@ def build_running_farms(df):
     return farms
 
 # =========================================================================
-# NEW -- BUILD "ZONE WISE RUNNING FARMS" DATA (for the plain table section
-# below the carousel + Harvest Updates panel).
+# BUILD "ZONE WISE RUNNING FARMS" DATA (for the plain table section
+# below the carousel).
 #
 # Same "Running" rule as build_running_farms() above (a farm qualifies
 # when NOT every pond it has a saved record for is at Full Harvest), but
@@ -668,11 +665,9 @@ def build_zone_wise_running_farms(df):
 # =========================================================================
 # BUILD HARVEST UPDATES ITEMS
 #
-# Splits each saved row into up to two harvest events (1st slot / 2nd
-# slot, same convention used by "All Harvest Details" elsewhere in this
-# app family), formatted as one line each, most recent first. These are
-# shown ONE AT A TIME (sliding in from the right every
-# HARVEST_UPDATE_SECONDS) rather than as a scrolling ticker.
+# NOTE: the Harvest Updates line was removed from the display (replaced by
+# the Active Farms count bar). These helper functions are left here
+# untouched but are no longer called.
 # =========================================================================
 def _customer_code_lookup_for_ticker():
     return _customer_code_lookup()
@@ -751,27 +746,41 @@ if st.button("🔄 Refresh Now"):
 
 df = load_data()
 running_farms = build_running_farms(df)
-ticker_items = build_harvest_ticker(df)
 
 st.caption(
-    f"{len(running_farms)} running farm(s) shown • Pond Layout rotates every {CAROUSEL_SECONDS}s • "
-    f"Harvest Updates rotate every {HARVEST_UPDATE_SECONDS}s • "
-    f"page auto-refreshes every {DATA_REFRESH_SECONDS // 60} min (paused while 'Stay' is ticked)"
+    f"{len(running_farms)} running farm(s) • opens in Full Screen • choose a Zone, then use Back / Next "
+    f"(or swipe) to move between farms • page auto-refreshes every {DATA_REFRESH_SECONDS // 60} min"
 )
 
 # =========================================================================
-# RENDER -- self-contained HTML/CSS/JS component. All animation (the
-# right-side slide-in for Pond Layout, the right-side slide-in for
-# Harvest Updates, the "Stay" freeze toggle, and the Full Screen toggle)
-# runs entirely client-side; Python only supplies the data as JSON once
-# per page load.
+# RENDER -- self-contained HTML/CSS/JS component. The Zone selector, the
+# Back / Next slide transitions, the Active Farms count and the Full
+# Screen toggle all run entirely client-side; Python only supplies the
+# data as JSON once per page load.
 # =========================================================================
 _HTML_TEMPLATE = """
 <div id="kmn-wrap">
   <style>
     #kmn-wrap { font-family: 'Segoe UI', Tahoma, sans-serif; color:#1e293b; display:flex; flex-direction:column; }
+
+    /* ---- top toolbar = Zone selector + Full Screen button */
+    #kmn-toolbar {
+      display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+      background:#0f172a; border-radius:12px; padding:8px 12px; margin-bottom:10px; flex-shrink:0;
+    }
+    .kmn-zone-label { display:flex; align-items:center; gap:8px; color:#e2e8f0; font-size:.9rem; font-weight:700; }
+    #kmn-zone-select {
+      background:#1e293b; color:#f8fafc; border:1px solid rgba(255,255,255,.35); border-radius:8px;
+      padding:8px 10px; font-size:1rem; min-height:40px; max-width:60vw;
+    }
+    .kmn-fs-btn {
+      background:rgba(255,255,255,.1); color:#fff; border:1px solid rgba(255,255,255,.35);
+      border-radius:8px; padding:8px 14px; font-size:.85rem; cursor:pointer; min-height:40px;
+    }
+    .kmn-fs-btn:hover { background:rgba(255,255,255,.2); }
+
     #kmn-carousel {
-      position: relative; width: 100%; height: 560px; overflow: hidden;
+      position: relative; width: 100%; height: 560px; overflow: hidden; touch-action: pan-y;
       border-radius: 16px; background: radial-gradient(circle at 50% 35%, #1e293b, #0f172a);
       box-shadow: 0 8px 30px rgba(0,0,0,.28); flex-shrink: 0;
     }
@@ -782,29 +791,30 @@ _HTML_TEMPLATE = """
     }
     .kmn-slide.active { transform: translateX(0); pointer-events: auto; z-index: 2; }
     .kmn-slide.leaving { transform: translateX(-100%); z-index: 1; pointer-events: none; }
+    /* used when going Back, so the incoming slide enters from the left */
+    .kmn-slide.from-left { transform: translateX(-100%); transition: none; }
 
-    /* ---- NEW: blurred farm-location snapshot sitting behind the zone
-       tint + content of each slide. Sized slightly larger than the
-       slide (inset:-20px) so the blur's soft edge never shows a lighter
-       halo at the slide's border. Slides with no matching location
-       simply never get this element (see JS below), so they keep the
-       original zone-tint-only look untouched. */
+    /* ---- blurred farm-location snapshot sitting behind the zone tint +
+       content of each slide. Sized slightly larger than the slide
+       (inset:-20px) so the blur's soft edge never shows a lighter halo
+       at the slide's border. Slides with no matching location simply
+       never get this element (see JS below). */
     .kmn-slide-mapbg {
       position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
       object-fit: cover; filter: brightness(.85) saturate(1.15);
       z-index: 0;
     }
-    /* ---- NEW: the existing zone-colored gradient, now drawn as its own
-       layer on top of the blurred map (instead of directly on the
-       slide), so the map shows through exactly the same way the old
-       dark radial background used to. */
+    /* ---- the zone-colored gradient, drawn as its own layer on top of
+       the blurred map so the map shows through. */
     .kmn-slide-tint { position: absolute; inset: 0; z-index: 1; }
-    /* ---- NEW: wraps the farm header + pond grid so it always sits
-       above both background layers. */
+    /* ---- wraps the farm header + pond grid so it always sits above both
+       background layers. overflow-y:auto so a farm with many ponds can be
+       scrolled on a phone. */
     .kmn-slide-content {
       position: relative; z-index: 2; width: 100%; height: 100%;
       display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
-      padding: 34px 20px 10px;
+      padding: 24px 12px 30px; box-sizing: border-box; overflow-y: auto; scrollbar-width: thin;
+      -webkit-overflow-scrolling: touch;
     }
 
     .kmn-slide-header { text-align: center; margin-bottom: 18px; }
@@ -818,8 +828,8 @@ _HTML_TEMPLATE = """
       display: flex; flex-wrap: wrap; justify-content: center; gap: 16px;
       margin-top: 16px; max-width: 1100px;
     }
-    /* ---- NEW: wraps each pond box + its optional WQ Special Cases
-       caption (shown below the box, same as the Marketing Manager app). */
+    /* ---- wraps each pond box + its optional WQ Special Cases caption
+       (shown below the box, same as the Marketing Manager app). */
     .kmn-pond-cell { display: flex; flex-direction: column; align-items: center; max-width: 132px; }
     .kmn-pond-box {
       position: relative;
@@ -830,9 +840,9 @@ _HTML_TEMPLATE = """
     .kmn-pond-label { font-size: .72rem; color: rgba(15,23,42,.75); font-weight: 600; }
     .kmn-pond-doc { font-size: 1.45rem; font-weight: 800; color: #0f172a; margin: 2px 0; }
     .kmn-pond-status { font-size: .68rem; font-weight: 700; color: rgba(15,23,42,.8); }
-    /* ---- NEW: species letter (V/M), WQ Special Cases icon + caption,
-       and Issues text -- same info the Marketing Manager app's Pond
-       Layout cards show, scaled down to fit this carousel's smaller box. */
+    /* ---- species letter (V/M), WQ Special Cases icon + caption, and
+       Issues text -- same info the Marketing Manager app's Pond Layout
+       cards show, scaled down to fit this carousel's smaller box. */
     .kmn-pond-species { font-size: .68rem; font-weight: 700; color: rgba(15,23,42,.85); margin-top: 2px; }
     .kmn-pond-wq-icon { position: absolute; top: 2px; right: 4px; font-size: .95rem; line-height: 1; }
     .kmn-pond-issues {
@@ -842,9 +852,9 @@ _HTML_TEMPLATE = """
     .kmn-pond-wq-caption {
       font-size: .65rem; color: #fbbf24; text-align: center; margin-top: 3px; line-height: 1.2;
     }
-    /* ---- NEW: small, sharp "exact location" thumbnail shown after the
-       Pond Layout grid -- distinct from the dimmed full-slide background
-       image above, which stays exactly as it was. */
+    /* ---- small, sharp "exact location" thumbnail shown after the Pond
+       Layout grid -- distinct from the dimmed full-slide background
+       image above. */
     .kmn-location-thumb-wrap { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
     .kmn-location-thumb {
       width: 220px; height: 150px; object-fit: cover; border-radius: 10px;
@@ -852,131 +862,140 @@ _HTML_TEMPLATE = """
     }
     .kmn-location-caption { margin-top: 5px; font-size: .75rem; color: #e2e8f0; font-weight: 600; }
     .kmn-empty { color: #94a3b8; font-size: 1.2rem; margin-top: 60px; text-align: center; }
-    .kmn-dots { position: absolute; bottom: 14px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; }
+    .kmn-dots { position: absolute; bottom: 8px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; pointer-events: none; }
     .kmn-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .3s; }
     .kmn-dot.active { background: #fff; }
 
-    .kmn-fs-btn {
-      position: absolute; top: 10px; right: 14px; z-index: 6;
-      background: rgba(15,23,42,.65); color: #fff; border: 1px solid rgba(255,255,255,.35);
-      border-radius: 8px; padding: 6px 12px; font-size: .8rem; cursor: pointer;
+    /* ---- bottom control bar (replaces the old Harvest Updates line):
+       Back button | Active Farms count | Next button */
+    #kmn-controls {
+      margin-top: 10px; background: #0f172a; border-radius: 12px; padding: 8px 12px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0;
     }
-    .kmn-fs-btn:hover { background: rgba(15,23,42,.9); }
+    .kmn-nav-btn {
+      background: #2563eb; color: #fff; border: none; border-radius: 10px; padding: 12px 18px;
+      font-size: 1rem; font-weight: 700; cursor: pointer; min-width: 92px; touch-action: manipulation;
+    }
+    .kmn-nav-btn:disabled { background: #475569; opacity: .6; cursor: default; }
+    #kmn-active-info { flex: 1; text-align: center; min-width: 0; }
+    #kmn-active-count { color: #fbbf24; font-weight: 800; font-size: .95rem; }
+    #kmn-slide-counter { color: #94a3b8; font-size: .75rem; font-weight: 600; margin-top: 2px; }
 
-    #kmn-harvest-panel {
-      margin-top: 14px; background: #0f172a; border-radius: 12px; padding: 10px 16px;
-      display: flex; align-items: center; gap: 16px; flex-shrink: 0;
-    }
-    .kmn-harvest-header { color: #fbbf24; font-weight: 800; font-size: .85rem; white-space: nowrap; }
-    #kmn-harvest-counter { color: #94a3b8; font-weight: 600; font-size: .75rem; margin-left: 6px; }
-    #kmn-harvest-viewport { flex: 1; overflow: hidden; white-space: nowrap; position: relative; height: 26px; }
-    #kmn-harvest-text {
-      position: absolute; top: 0; left: 0; right: 0;
-      color: #e2e8f0; font-size: .95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      transform: translateX(100%); transition: transform .5s ease-in-out;
-    }
-    .kmn-stay-toggle {
-      display: flex; align-items: center; gap: 6px; color: #e2e8f0; font-size: .9rem;
-      white-space: nowrap; cursor: pointer; user-select: none;
-    }
-    .kmn-stay-toggle input { width: 16px; height: 16px; cursor: pointer; }
-
-    /* ---- Full Screen mode: expands the whole component to fill the
-       browser window, with the Pond Layout carousel and the Harvest
-       Updates panel centered in the middle of the page. */
+    /* ---- Full Screen mode (now the default on open): expands the whole
+       component to fill the browser window. */
     #kmn-wrap.kmn-fullscreen-mode {
-       position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 999999;
-       background: #0b1220; padding: 10px; box-sizing: border-box;
-       display: flex; flex-direction: column; align-items: center; justify-content: center;
+       position: fixed; inset: 0; z-index: 999999;
+       background: #0b1220; padding: 10px; box-sizing: border-box; align-items: center;
     }
+    #kmn-wrap.kmn-fullscreen-mode #kmn-toolbar,
+    #kmn-wrap.kmn-fullscreen-mode #kmn-controls { width: 100%; max-width: 1600px; box-sizing: border-box; }
     #kmn-wrap.kmn-fullscreen-mode #kmn-carousel {
-       width: 100%; max-width: 1600px; height: min(85vh, 900px);
+       width: 100%; max-width: 1600px; height: auto; flex: 1 1 auto; min-height: 0;
     }
-    #kmn-wrap.kmn-fullscreen-mode #kmn-harvest-panel {
-       width: 100%; max-width: 1600px;
-    }
-    /* Centers each slide's content (zone badge, farm name, pond grid)
-       vertically in the middle of the carousel while in Full Screen,
-       instead of pinning it to the top. */
-    #kmn-wrap.kmn-fullscreen-mode .kmn-slide-content {
-      justify-content: center;
+    /* Centers each slide's content vertically in Full Screen, but stays
+       scrollable when it is taller than the screen. */
+    #kmn-wrap.kmn-fullscreen-mode .kmn-slide-content > :first-child { margin-top: auto; }
+    #kmn-wrap.kmn-fullscreen-mode .kmn-slide-content > :last-child { margin-bottom: auto; }
+
+    /* ---- phone-friendly sizing */
+    @media (max-width: 600px) {
+      .kmn-farm-name { font-size: 1.3rem; }
+      .kmn-customer-name { font-size: .95rem; }
+      .kmn-pond-grid { gap: 10px; }
+      .kmn-location-thumb { width: 180px; height: 120px; }
+      #kmn-carousel { height: 520px; }
+      #kmn-zone-select { max-width: 46vw; }
+      .kmn-nav-btn { padding: 12px 12px; min-width: 78px; }
     }
   </style>
+
+  <div id="kmn-toolbar">
+    <label class="kmn-zone-label">📍 Zone
+      <select id="kmn-zone-select"></select>
+    </label>
+    <button id="kmn-fullscreen-btn" class="kmn-fs-btn" title="Toggle full screen">⛶ Full Screen</button>
+  </div>
 
   <div id="kmn-carousel">
     <div id="kmn-slides"></div>
     <div class="kmn-dots" id="kmn-dots"></div>
-    <button id="kmn-fullscreen-btn" class="kmn-fs-btn" title="Toggle full screen">⛶ Full Screen</button>
   </div>
 
-  <div id="kmn-harvest-panel">
-    <span class="kmn-harvest-header">🌾 HARVEST UPDATES<span id="kmn-harvest-counter"></span></span>
-    <div id="kmn-harvest-viewport">
-      <span id="kmn-harvest-text"></span>
+  <div id="kmn-controls">
+    <button id="kmn-prev" class="kmn-nav-btn">◀ Back</button>
+    <div id="kmn-active-info">
+      <div id="kmn-active-count"></div>
+      <div id="kmn-slide-counter"></div>
     </div>
-    <label class="kmn-stay-toggle">
-      <input type="checkbox" id="kmn-stay-toggle"> Stay (freeze)
-    </label>
+    <button id="kmn-next" class="kmn-nav-btn">Next ▶</button>
   </div>
 
   <script>
     (function () {
       const farms = __FARMS_JSON__;
-      const ticker = __TICKER_JSON__;
-      const carouselSeconds = __CAROUSEL_SECONDS__;
-      const harvestUpdateSeconds = __HARVEST_UPDATE_SECONDS__;
       const dataRefreshSeconds = __DATA_REFRESH_SECONDS__;
+      const ALL = '__all__', NONE = '__none__';
 
       const slidesEl = document.getElementById('kmn-slides');
       const dotsEl = document.getElementById('kmn-dots');
-      const harvestTextEl = document.getElementById('kmn-harvest-text');
-      const harvestCounterEl = document.getElementById('kmn-harvest-counter');
-      const stayCheckbox = document.getElementById('kmn-stay-toggle');
+      const carouselEl = document.getElementById('kmn-carousel');
+      const zoneSelect = document.getElementById('kmn-zone-select');
+      const countEl = document.getElementById('kmn-active-count');
+      const counterEl = document.getElementById('kmn-slide-counter');
+      const prevBtn = document.getElementById('kmn-prev');
+      const nextBtn = document.getElementById('kmn-next');
       const fsButton = document.getElementById('kmn-fullscreen-btn');
       const wrapEl = document.getElementById('kmn-wrap');
 
+      let visible = farms.slice();
+      let selectedZone = ALL;
       let current = 0;
-      let paused = false;
-      let carouselTimer = null;
-      let harvestIndex = 0;
-      let harvestTimer = null;
       let isFullscreen = false;
       let fsFrameEl = null;
       try { fsFrameEl = window.frameElement; } catch (e) { fsFrameEl = null; }
 
       function escapeHtml(v) {
         return String(v == null ? '' : v)
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
+      // Remembers the chosen Zone / farm across the periodic page refresh.
+      function store(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
+      function recall(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+
+      function zoneKey(f) { return f.zone ? f.zone : NONE; }
+      function zoneLabel(k) { return k === NONE ? 'No Zone' : 'Zone ' + k; }
 
       // ---- Each zone gets its own tinted slide background (in addition
       // to the zone badge), so different zones are visually distinct.
-      // This now draws on the .kmn-slide-tint layer (which sits above
-      // the NEW blurred farm-location image, when one exists) instead
-      // of directly on the slide, so the map still shows through.
       function zoneSlideBackground(zoneColor) {
         return 'linear-gradient(165deg, ' + zoneColor + '55 0%, #0f172a 62%)';
       }
 
+      function buildZoneOptions() {
+        const keys = [];
+        farms.forEach(function (f) { const k = zoneKey(f); if (keys.indexOf(k) === -1) keys.push(k); });
+        zoneSelect.innerHTML = '<option value="' + ALL + '">All Zones</option>'
+          + keys.map(function (k) {
+            return '<option value="' + escapeHtml(k) + '">' + escapeHtml(zoneLabel(k)) + '</option>';
+          }).join('');
+      }
+
       function renderSlides() {
-        if (!farms.length) {
+        if (!visible.length) {
           slidesEl.innerHTML = '<div class="kmn-slide active"><div class="kmn-empty">No running farms found.</div></div>';
+          dotsEl.innerHTML = '';
           return;
         }
-        slidesEl.innerHTML = farms.map(function (f, i) {
+        slidesEl.innerHTML = visible.map(function (f, i) {
           const ponds = f.ponds.map(function (p) {
             const wqIconHtml = p.wq_special
-              ? '<div class="kmn-pond-wq-icon" title="WQ Special Case">🫨</div>'
-              : '';
+              ? '<div class="kmn-pond-wq-icon" title="WQ Special Case">🫨</div>' : '';
             const speciesHtml = p.species
-              ? '<div class="kmn-pond-species">' + escapeHtml(p.species) + '</div>'
-              : '';
+              ? '<div class="kmn-pond-species">' + escapeHtml(p.species) + '</div>' : '';
             const issuesHtml = p.issues
-              ? '<div class="kmn-pond-issues">' + escapeHtml(p.issues) + '</div>'
-              : '';
+              ? '<div class="kmn-pond-issues">' + escapeHtml(p.issues) + '</div>' : '';
             const wqCaptionHtml = p.wq_special
-              ? '<div class="kmn-pond-wq-caption">🫨 ' + escapeHtml(p.wq_special) + '</div>'
-              : '';
+              ? '<div class="kmn-pond-wq-caption">🫨 ' + escapeHtml(p.wq_special) + '</div>' : '';
             return '<div class="kmn-pond-cell">'
               + '<div class="kmn-pond-box" style="background:' + p.color + '; border-color:' + f.zone_color + ';">'
               + wqIconHtml
@@ -990,15 +1009,15 @@ _HTML_TEMPLATE = """
               + '</div>';
           }).join('');
 
-          // NEW: only add the blurred map <img> when this farm actually
+          // Only add the blurred map <img> when this farm actually
           // resolved a location -- farms with no match keep exactly the
-          // old zone-tint-only background. onerror hides it gracefully
-          // if the snapshot URL ever fails to load.
+          // zone-tint-only background. onerror hides it gracefully if
+          // the snapshot URL ever fails to load.
           const mapBgHtml = f.map_image
             ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
             : '';
 
-          // NEW: a small, sharp "exact location" thumbnail shown after the
+          // A small, sharp "exact location" thumbnail shown after the
           // Pond Layout grid -- separate from the dimmed full-slide
           // background above, and only added when a location was found.
           const locationThumbHtml = f.map_image
@@ -1008,7 +1027,7 @@ _HTML_TEMPLATE = """
               + '</div>'
             : '';
 
-          return '<div class="kmn-slide' + (i === 0 ? ' active' : '') + '" data-index="' + i + '">'
+          return '<div class="kmn-slide' + (i === current ? ' active' : '') + '" data-index="' + i + '">'
             + mapBgHtml
             + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
             + '<div class="kmn-slide-content">'
@@ -1023,84 +1042,99 @@ _HTML_TEMPLATE = """
             + '</div>';
         }).join('');
 
-        dotsEl.innerHTML = farms.map(function (_, i) {
-          return '<div class="kmn-dot' + (i === 0 ? ' active' : '') + '"></div>';
-        }).join('');
+        // Dots only when there are few enough to fit; the "Farm x of y"
+        // counter below always shows.
+        dotsEl.innerHTML = visible.length <= 15
+          ? visible.map(function (_, i) {
+              return '<div class="kmn-dot' + (i === current ? ' active' : '') + '"></div>';
+            }).join('')
+          : '';
       }
 
-      // ---- Slide-in-from-the-right transition: the incoming slide
-      // moves from off-screen right to center, the outgoing slide moves
-      // off-screen to the left. No fade/opacity involved.
-      function goTo(newIndex) {
+      // ---- Active Farms count (replaces the old Harvest Updates line).
+      function updateInfo() {
+        const n = visible.length;
+        countEl.textContent = selectedZone === ALL
+          ? 'All Running Farms: ' + n
+          : 'Active Farms in ' + zoneLabel(selectedZone) + ': ' + n;
+        counterEl.textContent = n ? 'Farm ' + (current + 1) + ' of ' + n : '';
+        prevBtn.disabled = nextBtn.disabled = n < 2;
+      }
+
+      function applyZone(zone, startIndex) {
+        selectedZone = zone;
+        zoneSelect.value = zone;
+        visible = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
+        current = Math.min(Math.max(startIndex || 0, 0), Math.max(visible.length - 1, 0));
+        renderSlides();
+        updateInfo();
+        store('kmn_zone', zone);
+        store('kmn_idx', String(current));
+      }
+
+      // ---- Slide transition. dir = +1 (Next: the incoming slide moves
+      // in from the right, the outgoing one leaves to the left) or -1
+      // (Back: the incoming slide enters from the left). No fade/opacity.
+      function goTo(newIndex, dir) {
         const slides = slidesEl.querySelectorAll('.kmn-slide');
         const dots = dotsEl.querySelectorAll('.kmn-dot');
         slides.forEach(function (s, i) {
           if (i === newIndex) {
-            s.classList.remove('leaving');
-            s.classList.add('active');
+            if (dir < 0) {
+              s.classList.remove('active', 'leaving');
+              s.classList.add('from-left');
+              void s.offsetWidth; // force reflow so the transition below actually runs
+              s.classList.remove('from-left');
+              s.classList.add('active');
+            } else {
+              s.classList.remove('leaving', 'from-left');
+              s.classList.add('active');
+            }
           } else if (i === current) {
             s.classList.remove('active');
-            s.classList.add('leaving');
-            setTimeout(function () { s.classList.remove('leaving'); }, 650);
+            if (dir > 0) {
+              s.classList.add('leaving');
+              setTimeout(function () { s.classList.remove('leaving'); }, 650);
+            }
           } else {
-            s.classList.remove('active', 'leaving');
+            s.classList.remove('active', 'leaving', 'from-left');
           }
         });
         dots.forEach(function (d, i) { d.classList.toggle('active', i === newIndex); });
         current = newIndex;
+        updateInfo();
+        store('kmn_idx', String(current));
       }
 
-      function nextSlide() {
-        if (paused || farms.length < 2) return;
-        goTo((current + 1) % farms.length);
+      function step(dir) {
+        const n = visible.length;
+        if (n < 2) return;
+        goTo((current + dir + n) % n, dir);
       }
 
-      function startCarousel() {
-        if (carouselTimer) clearInterval(carouselTimer);
-        carouselTimer = setInterval(nextSlide, carouselSeconds * 1000);
-      }
+      zoneSelect.addEventListener('change', function () { applyZone(this.value, 0); });
+      prevBtn.addEventListener('click', function () { step(-1); });
+      nextBtn.addEventListener('click', function () { step(1); });
 
-      // ---- Harvest Updates: one item at a time, sliding in from the
-      // right (no fade), advancing every harvestUpdateSeconds.
-      function renderHarvestItem() {
-        if (!ticker.length) {
-          harvestTextEl.style.transition = 'none';
-          harvestTextEl.style.transform = 'translateX(0)';
-          harvestTextEl.textContent = 'No harvest activity recorded yet.';
-          harvestCounterEl.textContent = '';
-          return;
-        }
-        harvestTextEl.style.transition = 'none';
-        harvestTextEl.style.transform = 'translateX(100%)';
-        harvestTextEl.textContent = ticker[harvestIndex];
-        harvestCounterEl.textContent = ' (' + (harvestIndex + 1) + ' / ' + ticker.length + ')';
-        void harvestTextEl.offsetWidth; // force reflow so the transition below actually runs
-        harvestTextEl.style.transition = 'transform .5s ease-in-out';
-        requestAnimationFrame(function () { harvestTextEl.style.transform = 'translateX(0)'; });
-      }
-
-      function nextHarvestItem() {
-        if (paused || ticker.length < 2) return;
-        harvestIndex = (harvestIndex + 1) % ticker.length;
-        renderHarvestItem();
-      }
-
-      function startHarvestRotation() {
-        if (harvestTimer) clearInterval(harvestTimer);
-        harvestTimer = setInterval(nextHarvestItem, harvestUpdateSeconds * 1000);
-      }
-
-      // ---- "Stay" freezes both the Pond Layout carousel and the
-      // Harvest Updates rotation (and the periodic page refresh below).
-      stayCheckbox.addEventListener('change', function () {
-        paused = this.checked;
-      });
+      // ---- Swipe left/right on touch screens = Next / Back.
+      let touchX = null, touchY = null;
+      carouselEl.addEventListener('touchstart', function (e) {
+        touchX = e.touches[0].clientX; touchY = e.touches[0].clientY;
+      }, { passive: true });
+      carouselEl.addEventListener('touchend', function (e) {
+        if (touchX === null) return;
+        const dx = e.changedTouches[0].clientX - touchX;
+        const dy = e.changedTouches[0].clientY - touchY;
+        touchX = touchY = null;
+        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
+      }, { passive: true });
 
       // ---- Full Screen: expands the whole component to fill the
-      // browser window, centered. Resizes the actual Streamlit component
-      // iframe (same-origin, via window.frameElement) so it behaves like
-      // a true full-screen kiosk view; also makes a best-effort attempt
-      // at the browser's native Fullscreen API.
+      // browser window. Resizes the actual Streamlit component iframe
+      // (same-origin, via window.frameElement) so it behaves like a true
+      // full-screen kiosk view; also makes a best-effort attempt at the
+      // browser's native Fullscreen API (browsers only allow that after
+      // a tap/click, so on first open the CSS-based full screen applies).
       function enterFullscreen() {
         isFullscreen = true;
         wrapEl.classList.add('kmn-fullscreen-mode');
@@ -1110,6 +1144,7 @@ _HTML_TEMPLATE = """
           fsFrameEl.style.left = '0';
           fsFrameEl.style.width = '100vw';
           fsFrameEl.style.height = '100vh';
+          fsFrameEl.style.height = '100dvh'; // ignored by browsers that don't know dvh (keeps 100vh)
           fsFrameEl.style.zIndex = '999999';
           fsFrameEl.style.border = 'none';
         }
@@ -1146,21 +1181,23 @@ _HTML_TEMPLATE = """
       });
       document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && isFullscreen) exitFullscreen();
+        else if (e.key === 'ArrowRight') step(1);
+        else if (e.key === 'ArrowLeft') step(-1);
       });
 
-      renderSlides();
-      renderHarvestItem();
-      startCarousel();
-      startHarvestRotation();
+      // ---- Start-up: restore the last Zone / farm (if any), then open
+      // in Full Screen by default.
+      buildZoneOptions();
+      const savedZone = recall('kmn_zone');
+      const zoneOk = savedZone && Array.prototype.some.call(zoneSelect.options, function (o) { return o.value === savedZone; });
+      applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0);
+      enterFullscreen();
 
       // Periodically reload the whole app so it pulls fresh data from the
-      // Google Sheet. Skipped while "Stay" is ticked so a frozen screen
-      // doesn't jump mid-review; the manual "Refresh Now" button above
-      // still works at any time.
+      // Google Sheet (the chosen Zone / farm is restored afterwards); the
+      // manual "Refresh Now" button above still works at any time.
       setInterval(function () {
-        if (!paused) {
-          try { window.parent.location.reload(); } catch (e) { window.location.reload(); }
-        }
+        try { window.parent.location.reload(); } catch (e) { window.location.reload(); }
       }, dataRefreshSeconds * 1000);
     })();
   </script>
@@ -1170,26 +1207,21 @@ _HTML_TEMPLATE = """
 _html = (
     _HTML_TEMPLATE
     .replace("__FARMS_JSON__", json.dumps(running_farms))
-    .replace("__TICKER_JSON__", json.dumps(ticker_items))
-    .replace("__CAROUSEL_SECONDS__", json.dumps(CAROUSEL_SECONDS))
-    .replace("__HARVEST_UPDATE_SECONDS__", json.dumps(HARVEST_UPDATE_SECONDS))
     .replace("__DATA_REFRESH_SECONDS__", json.dumps(DATA_REFRESH_SECONDS))
-    .replace("__MAP_IMAGE_WIDTH__", str(MAP_IMAGE_WIDTH))
-    .replace("__MAP_IMAGE_HEIGHT__", str(MAP_IMAGE_HEIGHT))
 )
 
-components.html(_html, height=680, scrolling=False)
+components.html(_html, height=720, scrolling=False)
 
 # =========================================================================
-# NEW -- "Zone wise Running Farms - Live Display" section.
+# "Zone wise Running Farms - Live Display" section.
 #
-# A plain (non-rotating) table below the carousel + Harvest Updates
-# panel, grouped by Zone. Columns: Customer Name + Farm Name with Code |
-# Vannamei Ponds | Monodon Ponds. Each pond is rendered as a small box
-# using the same status colors as the carousel above, showing that
-# pond's DOC Today value, and -- ported from the Marketing Manager app's
-# Pond Layout cards -- a WQ Special Cases icon/caption and an Issues line
-# when either is present on that pond's latest saved record.
+# A plain (non-rotating) table below the carousel, grouped by Zone.
+# Columns: Customer Name + Farm Name with Code | Vannamei Ponds | Monodon
+# Ponds. Each pond is rendered as a small box using the same status
+# colors as the carousel above, showing that pond's DOC Today value, and
+# -- ported from the Marketing Manager app's Pond Layout cards -- a WQ
+# Special Cases icon/caption and an Issues line when either is present on
+# that pond's latest saved record.
 # =========================================================================
 def _escape_html_zw(v):
     return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
