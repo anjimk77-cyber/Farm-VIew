@@ -312,12 +312,36 @@ def build_map_image_url(lat, lon, polygon=None):
 # HELPERS -- ported from the Marketing Manager / full manager app's Pond
 # Layout logic, kept self-contained here.
 # =========================================================================
+def _norm_key(v):
+    """Lower-cases and collapses extra / non-breaking spaces so names that
+    only differ by case or hidden spacing still match."""
+    return re.sub(r"\s+", " ", str(v).replace("\u00a0", " ")).strip().lower()
+
 def _farm_zone(customer, farm):
-    match = customer_df[
-        (customer_df["Customer Name"] == customer) & (customer_df["Farm Name with Code"] == farm)
-    ]
-    if len(match) > 0:
-        return str(match.iloc[0].get("Zone", "")).strip()
+    """Finds a farm's Zone in 'Customer List.xlsx'. Tries the names first
+    (ignoring case / odd spacing / rows with a blank Zone), then falls back
+    to the Customer ID (e.g. C00876) if it appears in the sheet's names."""
+    cust_n, farm_n = _norm_key(customer), _norm_key(farm)
+    cust_col = customer_df["Customer Name"].map(_norm_key)
+    farm_col = customer_df["Farm Name with Code"].map(_norm_key)
+    zones = customer_df["Zone"].astype(str).str.strip()
+    has_zone = zones.ne("") & zones.str.lower().ne("nan")
+
+    # 1) match by names
+    for mask in ((cust_col == cust_n) & (farm_col == farm_n), (farm_col == farm_n)):
+        m = customer_df[mask & has_zone]
+        if len(m) > 0:
+            return str(m.iloc[0]["Zone"]).strip()
+
+    # 2) fallback: match by Customer ID / code found in the names
+    for cand in _CUSTOMER_CODE_COLUMN_CANDIDATES:
+        if cand in customer_df.columns:
+            ids = customer_df[cand].astype(str).str.strip().str.upper()
+            for code in re.findall(r"[A-Za-z]\d{3,}", f"{customer} {farm}"):
+                m = customer_df[(ids == code.upper()) & has_zone]
+                if len(m) > 0:
+                    return str(m.iloc[0]["Zone"]).strip()
+            break
     return ""
 
 def build_zone_colors(zones):
