@@ -909,7 +909,9 @@ _HTML_TEMPLATE = """
        component to fill the browser window. */
     #kmn-wrap.kmn-fullscreen-mode {
        position: fixed; inset: 0; z-index: 999999;
-       background: #0b1220; padding: 10px; box-sizing: border-box; align-items: center;
+       /* extra bottom padding keeps the Back / Next bar above the floating badges that
+          Streamlit Cloud draws over the bottom-right corner of the page */
+       background: #0b1220; padding: 10px 10px 68px; box-sizing: border-box; align-items: center;
     }
     #kmn-wrap.kmn-fullscreen-mode #kmn-toolbar,
     #kmn-wrap.kmn-fullscreen-mode #kmn-controls { width: 100%; max-width: 1600px; box-sizing: border-box; }
