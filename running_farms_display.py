@@ -38,8 +38,8 @@ from google.oauth2.service_account import Credentials
 #      a control bar shows the Active Farms count for the selected Zone
 #      ("Active Farms in Zone X: N"), or "All Running Farms: N" when no
 #      Zone is selected, between the Back and Next buttons.
-#      CHANGED: after choosing a Zone, a second dropdown (Running
-#      Customers) narrows the slides to one customer's running farms.
+#      CHANGED: after choosing a Zone, a second dropdown lists each
+#      running farm as "Customer name - Farm name" and jumps straight to it.
 #   3) A "⛶ Full Screen" / "Exit Full Screen" button in the top bar.
 #   4) A "Zone wise Running Farms - Live Display" section (below the
 #      carousel) -- a plain, non-rotating table, grouped by Zone, listing
@@ -774,7 +774,7 @@ df = load_data()
 running_farms = build_running_farms(df)
 
 st.caption(
-    f"{len(running_farms)} running farm(s) • opens in Full Screen • choose a Zone and a Running Customer, then use Back / Next "
+    f"{len(running_farms)} running farm(s) • opens in Full Screen • choose a Zone and a Customer / Farm, then use Back / Next "
     f"(or swipe) to move between farms • page auto-refreshes every {DATA_REFRESH_SECONDS // 60} min"
 )
 
@@ -949,8 +949,8 @@ _HTML_TEMPLATE = """
       <label class="kmn-zone-label">📍 <span class="kmn-lbl">Zone</span>
         <select id="kmn-zone-select" title="Zone"></select>
       </label>
-      <label class="kmn-zone-label">👤 <span class="kmn-lbl">Customer</span>
-        <select id="kmn-customer-select" title="Running Customers"></select>
+      <label class="kmn-zone-label">👤 <span class="kmn-lbl">Customer / Farm</span>
+        <select id="kmn-customer-select" title="Customer name with farm name"></select>
       </label>
     </div>
     <button id="kmn-fullscreen-btn" class="kmn-fs-btn" title="Toggle full screen">⛶ Full Screen</button>
@@ -990,7 +990,6 @@ _HTML_TEMPLATE = """
 
       let visible = farms.slice();
       let selectedZone = ALL;
-      let selectedCustomer = ALL;
       let current = 0;
       let isFullscreen = false;
       let fsFrameEl = null;
@@ -1022,17 +1021,21 @@ _HTML_TEMPLATE = """
           }).join('');
       }
 
-      // ---- Running Customers dropdown: lists only customers that have a
-      // running farm in the selected Zone (all zones when "All Zones").
-      function buildCustomerOptions(zoneFarms) {
-        const names = [];
-        zoneFarms.forEach(function (f) { if (names.indexOf(f.customer) === -1) names.push(f.customer); });
-        names.sort(function (a, b) { return a.localeCompare(b); });
-        customerSelect.innerHTML = '<option value="' + ALL + '">All Customers (' + names.length + ')</option>'
-          + names.map(function (c) {
-            return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>';
-          }).join('');
-        return names;
+      // ---- Customer / Farm dropdown: one entry per running farm in the
+      // selected Zone, shown as "Customer name — Farm name" (grouped by Zone
+      // when "All Zones" is selected). Picking one jumps straight to that farm.
+      function buildFarmOptions() {
+        let html = '', openZone = null;
+        visible.forEach(function (f, i) {
+          if (selectedZone === ALL && zoneKey(f) !== openZone) {
+            if (openZone !== null) html += '</optgroup>';
+            openZone = zoneKey(f);
+            html += '<optgroup label="' + escapeHtml(zoneLabel(openZone)) + '">';
+          }
+          html += '<option value="' + i + '">' + escapeHtml(f.customer + ' — ' + f.farm) + '</option>';
+        });
+        if (openZone !== null) html += '</optgroup>';
+        customerSelect.innerHTML = html;
       }
 
       function renderSlides() {
@@ -1109,33 +1112,23 @@ _HTML_TEMPLATE = """
       // ---- Active Farms count (replaces the old Harvest Updates line).
       function updateInfo() {
         const n = visible.length;
-        if (selectedCustomer !== ALL) {
-          countEl.textContent = 'Active Farms of ' + selectedCustomer
-            + (selectedZone === ALL ? '' : ' in ' + zoneLabel(selectedZone)) + ': ' + n;
-        } else {
-          countEl.textContent = selectedZone === ALL
-            ? 'All Running Farms: ' + n
-            : 'Active Farms in ' + zoneLabel(selectedZone) + ': ' + n;
-        }
+        countEl.textContent = selectedZone === ALL
+          ? 'All Running Farms: ' + n
+          : 'Active Farms in ' + zoneLabel(selectedZone) + ': ' + n;
+        if (n) customerSelect.value = String(current); // dropdown always shows the farm on screen
         counterEl.textContent = n ? 'Farm ' + (current + 1) + ' of ' + n : '';
         prevBtn.disabled = nextBtn.disabled = n < 2;
       }
 
-      function applyZone(zone, startIndex, customer) {
+      function applyZone(zone, startIndex) {
         selectedZone = zone;
         zoneSelect.value = zone;
-        const zoneFarms = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
-        const names = buildCustomerOptions(zoneFarms);
-        selectedCustomer = (customer && customer !== ALL && names.indexOf(customer) !== -1) ? customer : ALL;
-        customerSelect.value = selectedCustomer;
-        visible = selectedCustomer === ALL
-          ? zoneFarms
-          : zoneFarms.filter(function (f) { return f.customer === selectedCustomer; });
+        visible = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
         current = Math.min(Math.max(startIndex || 0, 0), Math.max(visible.length - 1, 0));
+        buildFarmOptions();
         renderSlides();
         updateInfo();
         store('kmn_zone', zone);
-        store('kmn_cust', selectedCustomer);
         store('kmn_idx', String(current));
       }
 
@@ -1192,9 +1185,13 @@ _HTML_TEMPLATE = """
         goTo((current + dir + n) % n, dir);
       }
 
-      // Picking a new Zone resets the Customer to "All Customers".
-      zoneSelect.addEventListener('change', function () { applyZone(this.value, 0, ALL); });
-      customerSelect.addEventListener('change', function () { applyZone(selectedZone, 0, this.value); });
+      zoneSelect.addEventListener('change', function () { applyZone(this.value, 0); });
+      // Picking a "Customer — Farm" entry jumps straight to that farm's slide.
+      customerSelect.addEventListener('change', function () {
+        const idx = parseInt(this.value, 10);
+        if (isNaN(idx) || idx === current) return;
+        goTo(idx, idx > current ? 1 : -1);
+      });
       prevBtn.addEventListener('click', function () { step(-1); });
       nextBtn.addEventListener('click', function () { step(1); });
 
@@ -1272,8 +1269,7 @@ _HTML_TEMPLATE = """
       buildZoneOptions();
       const savedZone = recall('kmn_zone');
       const zoneOk = savedZone && Array.prototype.some.call(zoneSelect.options, function (o) { return o.value === savedZone; });
-      applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0,
-                zoneOk ? (recall('kmn_cust') || ALL) : ALL);
+      applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0);
       enterFullscreen();
 
       // Periodically reload the whole app so it pulls fresh data from the
