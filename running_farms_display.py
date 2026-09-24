@@ -38,6 +38,8 @@ from google.oauth2.service_account import Credentials
 #      a control bar shows the Active Farms count for the selected Zone
 #      ("Active Farms in Zone X: N"), or "All Running Farms: N" when no
 #      Zone is selected, between the Back and Next buttons.
+#      CHANGED: after choosing a Zone, a second dropdown (Running
+#      Customers) narrows the slides to one customer's running farms.
 #   3) A "⛶ Full Screen" / "Exit Full Screen" button in the top bar.
 #   4) A "Zone wise Running Farms - Live Display" section (below the
 #      carousel) -- a plain, non-rotating table, grouped by Zone, listing
@@ -772,7 +774,7 @@ df = load_data()
 running_farms = build_running_farms(df)
 
 st.caption(
-    f"{len(running_farms)} running farm(s) • opens in Full Screen • choose a Zone, then use Back / Next "
+    f"{len(running_farms)} running farm(s) • opens in Full Screen • choose a Zone and a Running Customer, then use Back / Next "
     f"(or swipe) to move between farms • page auto-refreshes every {DATA_REFRESH_SECONDS // 60} min"
 )
 
@@ -793,7 +795,9 @@ _HTML_TEMPLATE = """
       background:#0f172a; border-radius:12px; padding:8px 12px; margin-bottom:10px; flex-shrink:0;
     }
     .kmn-zone-label { display:flex; align-items:center; gap:8px; color:#e2e8f0; font-size:.9rem; font-weight:700; }
-    #kmn-zone-select {
+    /* holds the Zone + Running Customers dropdowns */
+    .kmn-filters { display:flex; align-items:center; gap:10px 16px; flex-wrap:wrap; }
+    #kmn-zone-select, #kmn-customer-select {
       background:#1e293b; color:#f8fafc; border:1px solid rgba(255,255,255,.35); border-radius:8px;
       padding:8px 10px; font-size:1rem; min-height:40px; max-width:60vw;
     }
@@ -930,15 +934,25 @@ _HTML_TEMPLATE = """
       .kmn-pond-grid { gap: 10px; }
       .kmn-location-thumb { width: 180px; height: 120px; }
       #kmn-carousel { height: 520px; }
-      #kmn-zone-select { max-width: 46vw; }
+      /* Zone + Customer dropdowns share one row on phones; Full Screen button drops to its own row */
+      #kmn-zone-select, #kmn-customer-select { max-width: none; width: 100%; min-width: 0; flex: 1; }
+      .kmn-filters { flex: 1 1 100%; flex-wrap: nowrap; }
+      .kmn-zone-label { flex: 1 1 0; min-width: 0; }
+      .kmn-lbl { display: none; }
+      .kmn-fs-btn { flex: 1 1 100%; }
       .kmn-nav-btn { padding: 12px 12px; min-width: 78px; }
     }
   </style>
 
   <div id="kmn-toolbar">
-    <label class="kmn-zone-label">📍 Zone
-      <select id="kmn-zone-select"></select>
-    </label>
+    <div class="kmn-filters">
+      <label class="kmn-zone-label">📍 <span class="kmn-lbl">Zone</span>
+        <select id="kmn-zone-select" title="Zone"></select>
+      </label>
+      <label class="kmn-zone-label">👤 <span class="kmn-lbl">Customer</span>
+        <select id="kmn-customer-select" title="Running Customers"></select>
+      </label>
+    </div>
     <button id="kmn-fullscreen-btn" class="kmn-fs-btn" title="Toggle full screen">⛶ Full Screen</button>
   </div>
 
@@ -966,6 +980,7 @@ _HTML_TEMPLATE = """
       const dotsEl = document.getElementById('kmn-dots');
       const carouselEl = document.getElementById('kmn-carousel');
       const zoneSelect = document.getElementById('kmn-zone-select');
+      const customerSelect = document.getElementById('kmn-customer-select');
       const countEl = document.getElementById('kmn-active-count');
       const counterEl = document.getElementById('kmn-slide-counter');
       const prevBtn = document.getElementById('kmn-prev');
@@ -975,6 +990,7 @@ _HTML_TEMPLATE = """
 
       let visible = farms.slice();
       let selectedZone = ALL;
+      let selectedCustomer = ALL;
       let current = 0;
       let isFullscreen = false;
       let fsFrameEl = null;
@@ -1004,6 +1020,19 @@ _HTML_TEMPLATE = """
           + keys.map(function (k) {
             return '<option value="' + escapeHtml(k) + '">' + escapeHtml(zoneLabel(k)) + '</option>';
           }).join('');
+      }
+
+      // ---- Running Customers dropdown: lists only customers that have a
+      // running farm in the selected Zone (all zones when "All Zones").
+      function buildCustomerOptions(zoneFarms) {
+        const names = [];
+        zoneFarms.forEach(function (f) { if (names.indexOf(f.customer) === -1) names.push(f.customer); });
+        names.sort(function (a, b) { return a.localeCompare(b); });
+        customerSelect.innerHTML = '<option value="' + ALL + '">All Customers (' + names.length + ')</option>'
+          + names.map(function (c) {
+            return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>';
+          }).join('');
+        return names;
       }
 
       function renderSlides() {
@@ -1080,21 +1109,33 @@ _HTML_TEMPLATE = """
       // ---- Active Farms count (replaces the old Harvest Updates line).
       function updateInfo() {
         const n = visible.length;
-        countEl.textContent = selectedZone === ALL
-          ? 'All Running Farms: ' + n
-          : 'Active Farms in ' + zoneLabel(selectedZone) + ': ' + n;
+        if (selectedCustomer !== ALL) {
+          countEl.textContent = 'Active Farms of ' + selectedCustomer
+            + (selectedZone === ALL ? '' : ' in ' + zoneLabel(selectedZone)) + ': ' + n;
+        } else {
+          countEl.textContent = selectedZone === ALL
+            ? 'All Running Farms: ' + n
+            : 'Active Farms in ' + zoneLabel(selectedZone) + ': ' + n;
+        }
         counterEl.textContent = n ? 'Farm ' + (current + 1) + ' of ' + n : '';
         prevBtn.disabled = nextBtn.disabled = n < 2;
       }
 
-      function applyZone(zone, startIndex) {
+      function applyZone(zone, startIndex, customer) {
         selectedZone = zone;
         zoneSelect.value = zone;
-        visible = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
+        const zoneFarms = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
+        const names = buildCustomerOptions(zoneFarms);
+        selectedCustomer = (customer && customer !== ALL && names.indexOf(customer) !== -1) ? customer : ALL;
+        customerSelect.value = selectedCustomer;
+        visible = selectedCustomer === ALL
+          ? zoneFarms
+          : zoneFarms.filter(function (f) { return f.customer === selectedCustomer; });
         current = Math.min(Math.max(startIndex || 0, 0), Math.max(visible.length - 1, 0));
         renderSlides();
         updateInfo();
         store('kmn_zone', zone);
+        store('kmn_cust', selectedCustomer);
         store('kmn_idx', String(current));
       }
 
@@ -1151,7 +1192,9 @@ _HTML_TEMPLATE = """
         goTo((current + dir + n) % n, dir);
       }
 
-      zoneSelect.addEventListener('change', function () { applyZone(this.value, 0); });
+      // Picking a new Zone resets the Customer to "All Customers".
+      zoneSelect.addEventListener('change', function () { applyZone(this.value, 0, ALL); });
+      customerSelect.addEventListener('change', function () { applyZone(selectedZone, 0, this.value); });
       prevBtn.addEventListener('click', function () { step(-1); });
       nextBtn.addEventListener('click', function () { step(1); });
 
@@ -1229,7 +1272,8 @@ _HTML_TEMPLATE = """
       buildZoneOptions();
       const savedZone = recall('kmn_zone');
       const zoneOk = savedZone && Array.prototype.some.call(zoneSelect.options, function (o) { return o.value === savedZone; });
-      applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0);
+      applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0,
+                zoneOk ? (recall('kmn_cust') || ALL) : ALL);
       enterFullscreen();
 
       // Periodically reload the whole app so it pulls fresh data from the
