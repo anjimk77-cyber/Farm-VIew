@@ -156,6 +156,16 @@ def load_data():
     if len(df) > 0:
         df = df[COLUMN_ORDER + ["Harvest Status", "Harvest Status 2", "WQ Special Cases"]]
     df = df.astype(str).replace("nan", "")
+    # Merge spelling variants of the same Customer / Farm name (extra or
+    # non-breaking spaces, different capitalisation) into ONE spelling (the
+    # most frequent one), so a single farm is not split into several
+    # "duplicate" farms with different pond layouts.
+    if len(df) > 0:
+        for _c in ("Customer", "Farm Name with Code"):
+            cleaned = df[_c].map(lambda v: re.sub(r"\s+", " ", str(v).replace("\u00a0", " ")).strip())
+            keys = cleaned.str.lower()
+            canon = cleaned.groupby(keys).agg(lambda x: x.value_counts().idxmax())
+            df[_c] = keys.map(canon)
     if "Deleted" in df.columns:
         is_deleted = df["Deleted"].astype(str).str.strip().str.lower().isin(["yes", "true", "1"])
         df = df[~is_deleted].reset_index(drop=True)
