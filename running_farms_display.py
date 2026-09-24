@@ -1098,6 +1098,14 @@ _HTML_TEMPLATE = """
         store('kmn_idx', String(current));
       }
 
+      // Moves a slide back to its parked spot (off-screen right) without animating.
+      function parkRight(s) {
+        s.style.transition = 'none';
+        s.classList.remove('active', 'leaving', 'from-left');
+        void s.offsetWidth;
+        s.style.transition = '';
+      }
+
       // ---- Slide transition. dir = +1 (Next: the incoming slide moves
       // in from the right, the outgoing one leaves to the left) or -1
       // (Back: the incoming slide enters from the left). No fade/opacity.
@@ -1120,10 +1128,15 @@ _HTML_TEMPLATE = """
             s.classList.remove('active');
             if (dir > 0) {
               s.classList.add('leaving');
-              setTimeout(function () { s.classList.remove('leaving'); }, 650);
+              // After it has slid out to the left, park it back on the right
+              // INSTANTLY (no transition) so it never sweeps back across the
+              // screen behind the new slide.
+              setTimeout(function () {
+                if (!s.classList.contains('active')) parkRight(s);
+              }, 650);
             }
           } else {
-            s.classList.remove('active', 'leaving', 'from-left');
+            parkRight(s);
           }
         });
         dots.forEach(function (d, i) { d.classList.toggle('active', i === newIndex); });
