@@ -73,15 +73,6 @@ from google.oauth2.service_account import Credentials
 #   - Each slide's content area scrolls (the extra rows/table/feed block
 #     can make a slide taller than the screen) -- swipe/scroll down on a
 #     slide to see everything.
-#   - FIX: on some mobile Chrome browsers, tapping Next/Back could show a
-#     blank slide or drop bits of text. Cause: every running farm's full
-#     slide used to be built into the DOM up front, all at once, even
-#     though only one is ever visible -- with many farms that's a lot of
-#     HTML sitting in memory, which some phones couldn't reliably paint.
-#     The carousel now keeps only TWO slide elements in the DOM at any
-#     time and fills whichever one is off-screen with the next farm's
-#     content right before sliding it in, so memory use no longer grows
-#     with the number of running farms.
 #
 # All of the carousel/zone/full-screen behaviour runs client-side in a
 # single self-contained HTML/CSS/JS component
@@ -89,44 +80,6 @@ from google.oauth2.service_account import Credentials
 # per page load/refresh.
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
-
-# =========================================================================
-# KIOSK / TRUE FULL SCREEN FIX
-#
-# The carousel's own JS (further down) only expanded its own <div> inside
-# the iframe that components.html renders -- it never touched Streamlit's
-# own header/menu/footer, or the SIZE of that iframe itself. So opening
-# the link showed the normal Streamlit page (title, subheader, "Refresh
-# Now" button, Streamlit's own toolbar) with the carousel just sitting in
-# its ordinary ~720px box -- not real edge-to-edge full screen.
-#
-# This CSS runs in the OUTER page (st.markdown is not sandboxed the way
-# components.html's iframe is), so it isn't affected by any iframe
-# sandboxing: it hides Streamlit's chrome, and forces the page's iframe
-# (there's only the one, from the components.html call below) to cover
-# the entire browser viewport, above everything else.
-# =========================================================================
-st.markdown("""
-<style>
-#MainMenu, header[data-testid="stHeader"], footer,
-div[data-testid="stToolbar"], div[data-testid="stDecoration"],
-div[data-testid="stStatusWidget"] {
-    display: none !important;
-}
-html, body, .stApp {
-    background: #0b1220 !important;
-    overflow: hidden !important;
-}
-iframe {
-    position: fixed !important;
-    top: 0 !important; left: 0 !important;
-    width: 100vw !important; height: 100vh !important;
-    height: 100dvh !important;
-    z-index: 999999 !important;
-    border: none !important;
-}
-</style>
-""", unsafe_allow_html=True)
 
 CUSTOMER_FILE = "Customer List.xlsx"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -846,20 +799,8 @@ _HTML_TEMPLATE = """
       let visible = farms.slice();
       let selectedZone = ALL;
       let current = 0;
-
-      // ---- FIX (mobile Chrome "Next shows blank" / missing text):
-      // Previously EVERY running farm's full slide (pond grid + feed
-      // table + feed order block) was built into the DOM at once, even
-      // though only one was ever visible. With more than a handful of
-      // farms that's a lot of HTML sitting in memory, and on lower-end
-      // phones that's what was causing Next/Back to occasionally render
-      // blank or drop bits of text (the browser ran low on memory/paint
-      // budget). Now there are only ever TWO real slide elements in the
-      // DOM -- navigating just re-fills whichever one is currently
-      // off-screen with the next farm's content and slides it in. Memory
-      // use no longer grows with the number of running farms.
-      let slideEls = [];
-      let activeSlot = 0;
+      let fsFrameEl = null;
+      try { fsFrameEl = window.frameElement; } catch (e) { fsFrameEl = null; }
 
       function escapeHtml(v) {
         return String(v == null ? '' : v)
@@ -904,21 +845,13 @@ _HTML_TEMPLATE = """
         customerSelect.innerHTML = html;
       }
 
-      // Dots only when there are few enough to fit; the "Farm x of y"
-      // counter below always shows.
-      function buildDots() {
-        dotsEl.innerHTML = (visible.length && visible.length <= 15)
-          ? visible.map(function (_, i) {
-              return '<div class="kmn-dot' + (i === current ? ' active' : '') + '"></div>';
-            }).join('')
-          : '';
-      }
-
-      // ---- Builds ONE farm's slide content (tint + content). Wrapped in
-      // try/catch so one malformed record can't blank the whole display --
-      // it falls back to a short message on that slide instead.
-      function buildSlideHTML(f) {
-        try {
+      function renderSlides() {
+        if (!visible.length) {
+          slidesEl.innerHTML = '<div class="kmn-slide active"><div class="kmn-empty">No running farms found.</div></div>';
+          dotsEl.innerHTML = '';
+          return;
+        }
+        slidesEl.innerHTML = visible.map(function (f, i) {
           const ponds = f.ponds.map(function (p) {
             const wqIconHtml = p.wq_special
               ? '<div class="kmn-pond-wq-icon" title="WQ Special Case">🫨</div>' : '';
@@ -975,7 +908,8 @@ _HTML_TEMPLATE = """
             + lastFeedItemsHtml
             + '</div>';
 
-          return '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
+          return '<div class="kmn-slide' + (i === current ? ' active' : '') + '" data-index="' + i + '">'
+            + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
             + '<div class="kmn-slide-content">'
             + '<div class="kmn-slide-header">'
             + '<div class="kmn-zone-badge" style="background:' + f.zone_color + ';">Zone ' + escapeHtml(f.zone || '-') + '</div>'
@@ -986,35 +920,17 @@ _HTML_TEMPLATE = """
             + '<div class="kmn-pond-grid">' + ponds + '</div>'
             + feedTableHtml
             + lastFeedHtml
+            + '</div>'
             + '</div>';
-        } catch (e) {
-          return '<div class="kmn-slide-content"><div class="kmn-empty">Could not display this farm.</div></div>';
-        }
-      }
+        }).join('');
 
-      // Creates the two reusable slide elements (only called once, or
-      // again after a Zone change resets the carousel).
-      function initSlideEls() {
-        slidesEl.innerHTML = '';
-        slideEls = [0, 1].map(function () {
-          const el = document.createElement('div');
-          el.className = 'kmn-slide';
-          slidesEl.appendChild(el);
-          return el;
-        });
-      }
-
-      function showEmpty() {
-        slidesEl.innerHTML = '<div class="kmn-slide active"><div class="kmn-empty">No running farms found.</div></div>';
-        slideEls = [];
-      }
-
-      function renderInitial() {
-        if (!visible.length) { showEmpty(); return; }
-        initSlideEls();
-        activeSlot = 0;
-        slideEls[0].innerHTML = buildSlideHTML(visible[current]);
-        slideEls[0].classList.add('active');
+        // Dots only when there are few enough to fit; the "Farm x of y"
+        // counter below always shows.
+        dotsEl.innerHTML = visible.length <= 15
+          ? visible.map(function (_, i) {
+              return '<div class="kmn-dot' + (i === current ? ' active' : '') + '"></div>';
+            }).join('')
+          : '';
       }
 
       // ---- Active Farms count.
@@ -1034,8 +950,7 @@ _HTML_TEMPLATE = """
         visible = zone === ALL ? farms.slice() : farms.filter(function (f) { return zoneKey(f) === zone; });
         current = Math.min(Math.max(startIndex || 0, 0), Math.max(visible.length - 1, 0));
         buildFarmOptions();
-        renderInitial();
-        buildDots();
+        renderSlides();
         updateInfo();
         store('kmn_zone', zone);
         store('kmn_idx', String(current));
@@ -1049,49 +964,41 @@ _HTML_TEMPLATE = """
         s.style.transition = '';
       }
 
-      // ---- Slide transition, using only the two reusable elements. dir
-      // = +1 (Next: the incoming slide moves in from the right, the
-      // outgoing one leaves to the left) or -1 (Back: the incoming slide
-      // enters from the left). No fade/opacity.
+      // ---- Slide transition. dir = +1 (Next: the incoming slide moves
+      // in from the right, the outgoing one leaves to the left) or -1
+      // (Back: the incoming slide enters from the left). No fade/opacity.
       function goTo(newIndex, dir) {
-        if (!slideEls.length || newIndex === current) return;
-        const activeEl = slideEls[activeSlot];
-        const incomingSlot = 1 - activeSlot;
-        const incomingEl = slideEls[incomingSlot];
-
-        // Fill the off-screen element with the target farm BEFORE it
-        // starts moving -- this is the only per-navigation DOM write now,
-        // instead of every farm being pre-built up front.
-        incomingEl.innerHTML = buildSlideHTML(visible[newIndex]);
-
-        if (dir < 0) {
-          incomingEl.classList.remove('active', 'leaving');
-          incomingEl.classList.add('from-left');
-          void incomingEl.offsetWidth; // force reflow so the transition below actually runs
-          incomingEl.classList.remove('from-left');
-          incomingEl.classList.add('active');
-        } else {
-          incomingEl.classList.remove('leaving', 'from-left');
-          incomingEl.classList.add('active');
-        }
-
-        activeEl.classList.remove('active');
-        if (dir > 0) {
-          activeEl.classList.add('leaving');
-          // After it has slid out to the left, park it back on the right
-          // INSTANTLY (no transition) so it never sweeps back across the
-          // screen, and so it's ready to be reused as the next "incoming"
-          // element.
-          setTimeout(function () {
-            if (!activeEl.classList.contains('active')) parkRight(activeEl);
-          }, 650);
-        } else {
-          activeEl.classList.remove('leaving', 'from-left');
-        }
-
-        activeSlot = incomingSlot;
+        const slides = slidesEl.querySelectorAll('.kmn-slide');
+        const dots = dotsEl.querySelectorAll('.kmn-dot');
+        slides.forEach(function (s, i) {
+          if (i === newIndex) {
+            if (dir < 0) {
+              s.classList.remove('active', 'leaving');
+              s.classList.add('from-left');
+              void s.offsetWidth; // force reflow so the transition below actually runs
+              s.classList.remove('from-left');
+              s.classList.add('active');
+            } else {
+              s.classList.remove('leaving', 'from-left');
+              s.classList.add('active');
+            }
+          } else if (i === current) {
+            s.classList.remove('active');
+            if (dir > 0) {
+              s.classList.add('leaving');
+              // After it has slid out to the left, park it back on the right
+              // INSTANTLY (no transition) so it never sweeps back across the
+              // screen behind the new slide.
+              setTimeout(function () {
+                if (!s.classList.contains('active')) parkRight(s);
+              }, 650);
+            }
+          } else {
+            parkRight(s);
+          }
+        });
+        dots.forEach(function (d, i) { d.classList.toggle('active', i === newIndex); });
         current = newIndex;
-        buildDots();
         updateInfo();
         store('kmn_idx', String(current));
       }
@@ -1131,16 +1038,25 @@ _HTML_TEMPLATE = """
       });
 
       // ---- Full Screen is now the ONLY mode: applied immediately on
-      // load, with no toggle button and no exit. The Streamlit page's
-      // own chrome and the sizing of the component's iframe are now
-      // handled by CSS injected from the outer page (see the
-      // st.markdown() call near the top of the .py file) rather than
-      // from in here, since JS inside this sandboxed iframe reaching
-      // back out via window.frameElement isn't reliable on every
-      // hosting setup. A best-effort attempt at the browser's native
-      // Fullscreen API is still made below.
+      // load, with no toggle button and no exit -- the whole component
+      // fills the browser window (and the actual Streamlit component
+      // iframe, same-origin, via window.frameElement) the instant the
+      // page opens. A best-effort attempt at the browser's native
+      // Fullscreen API is made too (browsers usually only allow that
+      // after a tap/click, so the CSS-based full screen above is what
+      // actually applies on open).
       function applyFullscreen() {
         wrapEl.classList.add('kmn-fullscreen-mode');
+        if (fsFrameEl) {
+          fsFrameEl.style.position = 'fixed';
+          fsFrameEl.style.top = '0';
+          fsFrameEl.style.left = '0';
+          fsFrameEl.style.width = '100vw';
+          fsFrameEl.style.height = '100vh';
+          fsFrameEl.style.height = '100dvh'; // ignored by browsers that don't know dvh (keeps 100vh)
+          fsFrameEl.style.zIndex = '999999';
+          fsFrameEl.style.border = 'none';
+        }
         try {
           if (document.documentElement.requestFullscreen) {
             document.documentElement.requestFullscreen().catch(function () {});
