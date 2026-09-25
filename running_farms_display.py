@@ -603,6 +603,20 @@ _HTML_TEMPLATE = """
       transform: translateX(100%); transition: transform .6s ease-in-out;
       pointer-events: none;
     }
+    /* PERF FIX: every running farm's slide sits fully built in the DOM at
+       once (just moved off-screen), so on a phone with a weaker GPU --
+       common on Samsung's own Exynos chipsets vs. Snapdragon -- painting
+       and compositing dozens of off-screen slides (each with shadows,
+       gradients, tables) at once caused visible lag/stutter, especially
+       while swiping or on Next/Back. content-visibility:auto tells the
+       browser to skip layout/paint entirely for any slide that isn't the
+       active one, since its size is already fixed by inset:0 -- no JS
+       changes needed, and nothing about the carousel's behavior changes. */
+    .kmn-slide:not(.active) { content-visibility: auto; }
+    /* Only hint the browser to keep a GPU layer ready for the slide(s)
+       actually animating right now, not all of them -- reduces the
+       number of compositing layers the GPU has to juggle per frame. */
+    .kmn-slide.active, .kmn-slide.leaving, .kmn-slide.from-left { will-change: transform; }
     .kmn-slide.active { transform: translateX(0); pointer-events: auto; z-index: 2; }
     .kmn-slide.leaving { transform: translateX(-100%); z-index: 1; pointer-events: none; }
     /* used when going Back, so the incoming slide enters from the left */
