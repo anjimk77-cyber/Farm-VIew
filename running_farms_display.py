@@ -38,46 +38,17 @@ from google.oauth2.service_account import Credentials
 #      "Customer name - Farm name" and jumps straight to it.
 #
 # CHANGED (this revision):
-#   - Removed the "Zone wise Running Farms - Live Display" table section
-#     that used to sit below the carousel. Only the carousel ("Running
-#     Farms — Live Display") remains.
-#   - Full Screen is no longer a toggle: there is no "⛶ Full Screen" /
-#     "Exit Full Screen" button any more. The display applies Full Screen
-#     immediately on open and stays there -- this is the only mode.
-#   - Removed the blurred satellite background image / small "Farm
-#     Location" thumbnail entirely (no more Locations Google Sheet /
-#     ArcGIS snapshot lookups) -- slides are back to the plain zone-tint
-#     background only.
-#   - Added an "L.V.D" line on each slide -- the LATEST date among that
-#     farm's own ponds' individual L.V.D dates (each pond's own most
-#     recently saved "Date"), same field the Marketing Manager app's Pond
-#     Layout cards call "L.V.D", just rolled up to one date per farm here.
-#   - Added a small table per slide (Pond No / Feed Per Day / ABW /
-#     Expecting Harvest), one row per pond -- EXCLUDING ponds at Full
-#     Harvest (fix: this table used to also list Full H ponds; those
-#     ponds are no longer relevant to feed/ABW/expecting-harvest tracking
-#     so they are left out here) -- using each pond's latest saved
-#     record, same fields and "2nd harvest slot wins" Expecting Harvest
-#     rule as the Marketing Manager app's Pond Layout cards.
-#   - Added a "Last Feed Purchased Date" + "Last Feed Order" block at the
-#     bottom of each slide (each feed item on its own line), pulled from
-#     the same Sales Details Google Sheet + "FEED" item-prefix rule the
-#     Marketing Manager app uses, filtered to that farm's Customer Code.
-#     FIX: this Customer Code lookup used to match Customer/Farm names
-#     EXACTLY against "Customer List.xlsx", but load_data() below already
-#     canonicalizes the Google Sheet's own Customer/Farm spelling (case,
-#     extra/odd spacing) before this lookup ever runs, so it was silently
-#     missing almost every farm and always falling back to "-". The
-#     lookup now matches on the same normalized key (_norm_key) used by
-#     _farm_zone() elsewhere in this file, so it actually finds the code.
-#   - Each slide's content area scrolls (the extra rows/table/feed block
-#     can make a slide taller than the screen) -- swipe/scroll down on a
-#     slide to see everything.
-#
-# All of the carousel/zone/full-screen behaviour runs client-side in a
-# single self-contained HTML/CSS/JS component
-# (streamlit.components.v1.html) -- Python only computes the data once
-# per page load/refresh.
+#   - FIX: added a real viewport meta tag (+ a small html/body CSS reset)
+#     to the injected HTML component. Without it, mobile browsers were
+#     rendering this component at a fixed ~980px desktop-style viewport
+#     and then zooming the whole thing out to fit the phone's screen --
+#     so every "@media (max-width: 600px)" phone-friendly rule further
+#     down in this same file was silently never triggering (the browser
+#     never saw a <600px CSS viewport, even on an actual phone), and the
+#     default browser body margin could add a few px of horizontal
+#     overflow/scroll on some phones. This is the ONLY functional change
+#     in this revision -- everything else (layout, data, behaviour) is
+#     untouched.
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
 
@@ -589,6 +560,22 @@ st.caption(
 # there is no toggle / exit button.
 # =========================================================================
 _HTML_TEMPLATE = """
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  /* FIX: components.html() does not add a viewport meta tag on its own,
+     so phones were rendering this whole component at a fixed ~980px
+     desktop-style viewport and zooming it out to fit the screen -- every
+     "@media (max-width: 600px)" rule further down in this file could
+     never actually fire on a real phone. The meta tag above makes the
+     iframe's CSS viewport match the real device width, so those phone
+     rules now trigger correctly. This reset also removes the browser's
+     default body margin/width so nothing can push the layout into a
+     horizontal scrollbar on narrow screens. */
+  html, body {
+    margin: 0; padding: 0; width: 100%; overflow-x: hidden;
+    -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  }
+</style>
 <div id="kmn-wrap">
   <style>
     #kmn-wrap { font-family: 'Segoe UI', Tahoma, sans-serif; color:#1e293b; display:flex; flex-direction:column; }
