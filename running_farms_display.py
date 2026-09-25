@@ -30,29 +30,29 @@ from google.oauth2.service_account import Credentials
 #      Locations Google Sheet the "Farm Map" app uses). Farms with no
 #      matching location simply fall back to the zone-tint-only
 #      background.
-#      CHANGED: the display now OPENS IN FULL SCREEN by default, has a
-#      Zone selector (All Zones / one Zone), and the slides move ONLY
-#      with the Back / Next buttons (or swipe / arrow keys) -- there is no
-#      automatic rotation any more. It is also phone-friendly.
-#   2) CHANGED: the old "Harvest Updates" line was removed. In its place
-#      a control bar shows the Active Farms count for the selected Zone
+#      The display ALWAYS opens (and stays) in Full Screen -- there is no
+#      toggle / exit button any more, since this is a kiosk-only view.
+#      There's a Zone selector (All Zones / one Zone) and the slides move
+#      ONLY with the Back / Next buttons (or swipe / arrow keys) -- no
+#      automatic rotation. It is also phone-friendly.
+#   2) A control bar shows the Active Farms count for the selected Zone
 #      ("Active Farms in Zone X: N"), or "All Running Farms: N" when no
 #      Zone is selected, between the Back and Next buttons.
-#      CHANGED: after choosing a Zone, a second dropdown lists each
-#      running farm as "Customer name - Farm name" and jumps straight to it.
-#   3) A "⛶ Full Screen" / "Exit Full Screen" button in the top bar.
-#   4) A "Zone wise Running Farms - Live Display" section (below the
-#      carousel) -- a plain, non-rotating table, grouped by Zone, listing
-#      every currently Running farm with its Vannamei Ponds and Monodon
-#      Ponds laid out side by side, each pond box using the same status
-#      colors, DOC Today values, Issues and WQ Special Cases shown
-#      elsewhere in this app family.
+#      After choosing a Zone, a second dropdown lists each running farm as
+#      "Customer name - Farm name" and jumps straight to it.
+#
+# CHANGED (this revision):
+#   - Removed the "Zone wise Running Farms - Live Display" table section
+#     that used to sit below the carousel. Only the carousel ("Running
+#     Farms — Live Display") remains.
+#   - Full Screen is no longer a toggle: there is no "⛶ Full Screen" /
+#     "Exit Full Screen" button any more. The display applies Full Screen
+#     immediately on open and stays there -- this is the only mode.
 #
 # All of the carousel/zone/full-screen behaviour runs client-side in a
 # single self-contained HTML/CSS/JS component
 # (streamlit.components.v1.html) -- Python only computes the data once
-# per page load/refresh. The Zone wise section below it is plain
-# server-rendered HTML (st.markdown), not part of that component.
+# per page load/refresh.
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
 
@@ -536,245 +536,6 @@ def build_running_farms(df):
     return farms
 
 # =========================================================================
-# BUILD "ZONE WISE RUNNING FARMS" DATA (for the plain table section
-# below the carousel).
-#
-# Same "Running" rule as build_running_farms() above (a farm qualifies
-# when NOT every pond it has a saved record for is at Full Harvest), but
-# instead of one combined Pond Layout per farm, each farm's latest-per-
-# pond records are split into a Vannamei Ponds list and a Monodon Ponds
-# list (by Species Culture), so the table below can show them side by
-# side. Each pond card below is ported directly from the Marketing
-# Manager app's own Pond Layout cards (box color, DOC Today / Started on
-# / Full H / Soon to be, Stocking Density, L.V.D, Feed/Day, ABW,
-# Expecting Harvest / Harvest Weight, Total Harvest KG, Issues, species
-# letter, and the WQ Special Cases icon + caption) rather than a
-# simplified box, so this section looks and behaves the same as that
-# reference.
-# =========================================================================
-def _farm_zone_zw(customer, farm):
-    """Same lookup as _farm_zone() above, used ONLY by this Zone wise
-    section (the carousel keeps using the original _farm_zone()
-    untouched). Matches Customer Name / Farm Name with Code with
-    whitespace trimmed and case-insensitively, so a farm whose Google
-    Sheet spelling differs from 'Customer List.xlsx' only by case or a
-    stray space still resolves to its Zone here instead of showing up
-    with no zone."""
-    customer_norm = str(customer).strip().lower()
-    farm_norm = str(farm).strip().lower()
-    match = customer_df[
-        (customer_df["Customer Name"].astype(str).str.strip().str.lower() == customer_norm)
-        & (customer_df["Farm Name with Code"].astype(str).str.strip().str.lower() == farm_norm)
-    ]
-    if len(match) > 0:
-        return str(match.iloc[0].get("Zone", "")).strip()
-    return ""
-
-def _zw_parse_harvest_kg(raw_value):
-    """Same combined-harvest parser as the Marketing Manager app's Pond
-    Layout section: a Harvest KG value entered as a combined total across
-    several ponds harvested together, e.g. '2000 (2)' (2000 kg split
-    across 2 ponds), is turned into that pond's PER-POND share
-    (2000 / 2 = 1000). A plain numeric value is returned as-is."""
-    s = str(raw_value).strip()
-    if not s:
-        return float("nan")
-    m = re.match(r"^([\d,]+(?:\.\d+)?)\s*\(\s*(\d+)\s*\)\s*$", s)
-    if m:
-        total = pd.to_numeric(m.group(1).replace(",", ""), errors="coerce")
-        count = pd.to_numeric(m.group(2), errors="coerce")
-        if pd.notna(total) and pd.notna(count) and count > 0:
-            return total / count
-        return float("nan")
-    return pd.to_numeric(s.replace(",", ""), errors="coerce")
-
-def _zw_harvest_kg_sum_row(row):
-    """Same per-row harvest-KG summing rule as the Marketing Manager
-    app's Pond Layout section: adds Harvest KG (slot 1) whenever that
-    slot's own Harvest Type is filled in, and Harvest KG 2 (slot 2)
-    whenever ITS Harvest Type 2 is filled in -- a KG value with no Type
-    text is skipped."""
-    row_total = 0.0
-    t1 = str(row.get("Harvest Type", "")).strip()
-    kg1 = _zw_parse_harvest_kg(row.get("Harvest KG", ""))
-    if t1 and pd.notna(kg1):
-        row_total += kg1
-    t2 = str(row.get("Harvest Type 2", "")).strip()
-    kg2 = _zw_parse_harvest_kg(row.get("Harvest KG 2", ""))
-    if t2 and pd.notna(kg2):
-        row_total += kg2
-    return row_total
-
-def build_zone_wise_running_farms(df):
-    required = {"Customer", "Farm Name with Code", "Pond Number", "Date", "Harvest Type", "Harvest Type 2"}
-    if len(df) == 0 or not required.issubset(df.columns):
-        return []
-
-    work = df.copy()
-    work["_ParsedDate"] = pd.to_datetime(work["Date"], errors="coerce")
-    latest_per_pond = (
-        work.dropna(subset=["_ParsedDate"])
-        .sort_values("_ParsedDate")
-        .groupby(["Customer", "Farm Name with Code", "Pond Number"], as_index=False)
-        .last()
-    )
-    if len(latest_per_pond) == 0:
-        return []
-
-    partial_history = (
-        work.assign(_HasPartial=(
-            work.get("Harvest Type", pd.Series("", index=work.index)).astype(str).str.lower().str.contains("partial")
-            | work.get("Harvest Type 2", pd.Series("", index=work.index)).astype(str).str.lower().str.contains("partial")
-        ))
-        .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HasPartial"]
-        .any()
-    )
-
-    latest_per_pond["_HasPartial"] = latest_per_pond.apply(
-        lambda r: bool(partial_history.get((r["Customer"], r["Farm Name with Code"], r["Pond Number"]), False)),
-        axis=1,
-    )
-    latest_per_pond["_Status"] = latest_per_pond.apply(lambda r: _pond_status(r, r["_HasPartial"]), axis=1)
-    latest_per_pond["_DocToday"] = latest_per_pond.apply(_doc_today, axis=1)
-
-    # Total Harvest KG per pond -- summed across EVERY saved record for
-    # that pond (not just its latest one), same rule + parser as the
-    # Marketing Manager app's Pond Layout "Total: X KG" line, so a pond
-    # that had one or more Partial H harvests and then later a Full H
-    # harvest gets both added together here too.
-    total_harvest_kg_by_pond = (
-        work.assign(_HarvestKGRow=work.apply(_zw_harvest_kg_sum_row, axis=1))
-        .groupby(["Customer", "Farm Name with Code", "Pond Number"])["_HarvestKGRow"]
-        .sum()
-    )
-
-    farms = []
-    for (customer, farm), group in latest_per_pond.groupby(["Customer", "Farm Name with Code"]):
-        total_ponds = group["Pond Number"].nunique()
-        full_h_ponds = (group["_Status"] == "Full H").sum()
-        if total_ponds > 0 and full_h_ponds >= total_ponds:
-            continue  # every pond on this farm is Full H -- not "Running"
-
-        zone = _farm_zone_zw(customer, farm)
-        vannamei_ponds, monodon_ponds = [], []
-        for _, prow in group.sort_values("Pond Number").iterrows():
-            pond_no = prow.get("Pond Number", "")
-            pond = {
-                "pond_no": str(pond_no),
-                "status": prow["_Status"],
-                "doc_today": prow["_DocToday"],
-                "density": prow.get("Density", ""),
-                "lvd_date": prow.get("Date", ""),
-                "feed_per_day": prow.get("Feed Per Day", ""),
-                "abw": prow.get("ABW", ""),
-                "expect_harvest_kg": prow.get("Expect Harvest (KG)", ""),
-                "harvest_type": prow.get("Harvest Type", ""),
-                "harvest_type2": prow.get("Harvest Type 2", ""),
-                "harvest_date": prow.get("Harvest Date", ""),
-                "harvest_date2": prow.get("Harvest Date 2", ""),
-                "harvest_kg": prow.get("Harvest KG", ""),
-                "harvest_kg2": prow.get("Harvest KG 2", ""),
-                "total_harvest_kg": total_harvest_kg_by_pond.get((customer, farm, pond_no), 0),
-                "issues": str(prow.get("Issues", "")).strip(),
-                "wq_special": str(prow.get("WQ Special Cases", "")).strip(),
-                "species": _species_letter(prow.get("Species Culture", "")),
-            }
-            if pond["species"] == "V":
-                vannamei_ponds.append(pond)
-            elif pond["species"] == "M":
-                monodon_ponds.append(pond)
-            # Ponds whose Species Culture is neither Vannamei nor Monodon
-            # (blank/unrecognized) simply aren't shown in either column,
-            # same as elsewhere in this app family.
-
-        farms.append({
-            "customer": str(customer),
-            "farm": str(farm),
-            "zone": zone,
-            "vannamei_ponds": vannamei_ponds,
-            "monodon_ponds": monodon_ponds,
-        })
-
-    farms.sort(key=lambda f: (f["zone"], f["customer"], f["farm"]))
-    return farms
-
-# =========================================================================
-# BUILD HARVEST UPDATES ITEMS
-#
-# NOTE: the Harvest Updates line was removed from the display (replaced by
-# the Active Farms count bar). These helper functions are left here
-# untouched but are no longer called.
-# =========================================================================
-def _customer_code_lookup_for_ticker():
-    return _customer_code_lookup()
-
-def _harvest_label(h_type):
-    t = str(h_type).strip().lower()
-    if "full" in t:
-        return "Full H"
-    elif "partial" in t:
-        return "Partial H"
-    return str(h_type).strip() or "Harvest"
-
-def _parse_harvest_kg(raw):
-    s = str(raw).strip()
-    if not s:
-        return None
-    m = re.match(r"^([\d,]+(?:\.\d+)?)\s*\(\s*(\d+)\s*\)\s*$", s)
-    if m:
-        total = pd.to_numeric(m.group(1).replace(",", ""), errors="coerce")
-        count = pd.to_numeric(m.group(2), errors="coerce")
-        if pd.notna(total) and pd.notna(count) and count > 0:
-            return total / count
-        return None
-    val = pd.to_numeric(s.replace(",", ""), errors="coerce")
-    return None if pd.isna(val) else val
-
-def build_harvest_ticker(df, limit=40):
-    required = {"Customer", "Farm Name with Code", "Pond Number", "Harvest Date", "Harvest Type",
-                "Harvest Date 2", "Harvest Type 2"}
-    if len(df) == 0 or not required.issubset(df.columns):
-        return []
-
-    code_lookup = _customer_code_lookup_for_ticker()
-    events = []
-
-    for _, row in df.iterrows():
-        status1 = str(row.get("Harvest Status", "")).strip().upper()
-        status2 = str(row.get("Harvest Status 2", "")).strip().upper()
-        slots = []
-        if (str(row.get("Harvest Date", "")).strip() or str(row.get("Harvest Type", "")).strip()) and status1 != "H":
-            slots.append(("Harvest Date", "Harvest Type", "Harvest KG", "Harvest ABW"))
-        if (str(row.get("Harvest Date 2", "")).strip() or str(row.get("Harvest Type 2", "")).strip()) and status2 != "H":
-            slots.append(("Harvest Date 2", "Harvest Type 2", "Harvest KG 2", "Harvest ABW 2"))
-
-        for date_col, type_col, kg_col, abw_col in slots:
-            h_type = row.get(type_col, "")
-            if not str(h_type).strip():
-                continue
-            h_date_raw = row.get(date_col, "")
-            h_date = pd.to_datetime(h_date_raw, errors="coerce")
-            kg_val = _parse_harvest_kg(row.get(kg_col, ""))
-            abw_val = row.get(abw_col, "")
-
-            customer = str(row.get("Customer", "")).strip()
-            farm = str(row.get("Farm Name with Code", "")).strip()
-            code = code_lookup.get((customer, farm), "")
-            code_part = f" -{code}" if code else ""
-            kg_part = f"{kg_val:,.0f}" if kg_val is not None else "-"
-            abw_part = str(abw_val).strip() or "-"
-            date_part = h_date.strftime("%Y/%m/%d") if pd.notna(h_date) else str(h_date_raw).strip()
-
-            text = (
-                f"{customer}{code_part} {farm} {_harvest_label(h_type)} from "
-                f"Pond No {row.get('Pond Number', '')} - {kg_part} KG with {abw_part} ABW at {date_part}"
-            )
-            events.append((h_date if pd.notna(h_date) else pd.Timestamp.min, text))
-
-    events.sort(key=lambda e: e[0], reverse=True)
-    return [text for _, text in events[:limit]]
-
-# =========================================================================
 # LOAD + COMPUTE
 # =========================================================================
 if st.button("🔄 Refresh Now"):
@@ -790,16 +551,17 @@ st.caption(
 
 # =========================================================================
 # RENDER -- self-contained HTML/CSS/JS component. The Zone selector, the
-# Back / Next slide transitions, the Active Farms count and the Full
-# Screen toggle all run entirely client-side; Python only supplies the
-# data as JSON once per page load.
+# Back / Next slide transitions and the Active Farms count all run
+# entirely client-side; Python only supplies the data as JSON once per
+# page load. The display always opens (and stays) in Full Screen mode --
+# there is no toggle / exit button.
 # =========================================================================
 _HTML_TEMPLATE = """
 <div id="kmn-wrap">
   <style>
     #kmn-wrap { font-family: 'Segoe UI', Tahoma, sans-serif; color:#1e293b; display:flex; flex-direction:column; }
 
-    /* ---- top toolbar = Zone selector + Full Screen button */
+    /* ---- top toolbar = Zone / Customer selectors */
     #kmn-toolbar {
       display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
       background:#0f172a; border-radius:12px; padding:8px 12px; margin-bottom:10px; flex-shrink:0;
@@ -811,11 +573,6 @@ _HTML_TEMPLATE = """
       background:#1e293b; color:#f8fafc; border:1px solid rgba(255,255,255,.35); border-radius:8px;
       padding:8px 10px; font-size:1rem; min-height:40px; max-width:60vw;
     }
-    .kmn-fs-btn {
-      background:rgba(255,255,255,.1); color:#fff; border:1px solid rgba(255,255,255,.35);
-      border-radius:8px; padding:8px 14px; font-size:.85rem; cursor:pointer; min-height:40px;
-    }
-    .kmn-fs-btn:hover { background:rgba(255,255,255,.2); }
 
     #kmn-carousel {
       position: relative; width: 100%; height: 560px; overflow: hidden; touch-action: pan-y;
@@ -904,8 +661,7 @@ _HTML_TEMPLATE = """
     .kmn-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .3s; }
     .kmn-dot.active { background: #fff; }
 
-    /* ---- bottom control bar (replaces the old Harvest Updates line):
-       Back button | Active Farms count | Next button */
+    /* ---- bottom control bar: Back button | Active Farms count | Next button */
     #kmn-controls {
       margin-top: 10px; background: #0f172a; border-radius: 12px; padding: 8px 12px;
       display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0;
@@ -919,8 +675,9 @@ _HTML_TEMPLATE = """
     #kmn-active-count { color: #fbbf24; font-weight: 800; font-size: .95rem; }
     #kmn-slide-counter { color: #94a3b8; font-size: .75rem; font-weight: 600; margin-top: 2px; }
 
-    /* ---- Full Screen mode (now the default on open): expands the whole
-       component to fill the browser window. */
+    /* ---- Full Screen: this is now the ONLY mode -- applied immediately
+       on load. The component always fills the browser window; there is
+       no toggle button and no exit. */
     #kmn-wrap.kmn-fullscreen-mode {
        position: fixed; inset: 0; z-index: 999999;
        /* extra bottom padding keeps the Back / Next bar above the floating badges that
@@ -944,12 +701,11 @@ _HTML_TEMPLATE = """
       .kmn-pond-grid { gap: 10px; }
       .kmn-location-thumb { width: 180px; height: 120px; }
       #kmn-carousel { height: 520px; }
-      /* Zone + Customer dropdowns share one row on phones; Full Screen button drops to its own row */
+      /* Zone + Customer dropdowns share one row on phones */
       #kmn-zone-select, #kmn-customer-select { max-width: none; width: 100%; min-width: 0; flex: 1; }
       .kmn-filters { flex: 1 1 100%; flex-wrap: nowrap; }
       .kmn-zone-label { flex: 1 1 0; min-width: 0; }
       .kmn-lbl { display: none; }
-      .kmn-fs-btn { flex: 1 1 100%; }
       .kmn-nav-btn { padding: 12px 12px; min-width: 78px; }
     }
   </style>
@@ -963,7 +719,6 @@ _HTML_TEMPLATE = """
         <select id="kmn-customer-select" title="Customer name with farm name"></select>
       </label>
     </div>
-    <button id="kmn-fullscreen-btn" class="kmn-fs-btn" title="Toggle full screen">⛶ Full Screen</button>
   </div>
 
   <div id="kmn-carousel">
@@ -995,13 +750,11 @@ _HTML_TEMPLATE = """
       const counterEl = document.getElementById('kmn-slide-counter');
       const prevBtn = document.getElementById('kmn-prev');
       const nextBtn = document.getElementById('kmn-next');
-      const fsButton = document.getElementById('kmn-fullscreen-btn');
       const wrapEl = document.getElementById('kmn-wrap');
 
       let visible = farms.slice();
       let selectedZone = ALL;
       let current = 0;
-      let isFullscreen = false;
       let fsFrameEl = null;
       try { fsFrameEl = window.frameElement; } catch (e) { fsFrameEl = null; }
 
@@ -1119,7 +872,7 @@ _HTML_TEMPLATE = """
           : '';
       }
 
-      // ---- Active Farms count (replaces the old Harvest Updates line).
+      // ---- Active Farms count.
       function updateInfo() {
         const n = visible.length;
         countEl.textContent = selectedZone === ALL
@@ -1218,14 +971,20 @@ _HTML_TEMPLATE = """
         if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
       }, { passive: true });
 
-      // ---- Full Screen: expands the whole component to fill the
-      // browser window. Resizes the actual Streamlit component iframe
-      // (same-origin, via window.frameElement) so it behaves like a true
-      // full-screen kiosk view; also makes a best-effort attempt at the
-      // browser's native Fullscreen API (browsers only allow that after
-      // a tap/click, so on first open the CSS-based full screen applies).
-      function enterFullscreen() {
-        isFullscreen = true;
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowRight') step(1);
+        else if (e.key === 'ArrowLeft') step(-1);
+      });
+
+      // ---- Full Screen is now the ONLY mode: applied immediately on
+      // load, with no toggle button and no exit -- the whole component
+      // fills the browser window (and the actual Streamlit component
+      // iframe, same-origin, via window.frameElement) the instant the
+      // page opens. A best-effort attempt at the browser's native
+      // Fullscreen API is made too (browsers usually only allow that
+      // after a tap/click, so the CSS-based full screen above is what
+      // actually applies on open).
+      function applyFullscreen() {
         wrapEl.classList.add('kmn-fullscreen-mode');
         if (fsFrameEl) {
           fsFrameEl.style.position = 'fixed';
@@ -1237,7 +996,6 @@ _HTML_TEMPLATE = """
           fsFrameEl.style.zIndex = '999999';
           fsFrameEl.style.border = 'none';
         }
-        fsButton.textContent = '⛶ Exit Full Screen';
         try {
           if (document.documentElement.requestFullscreen) {
             document.documentElement.requestFullscreen().catch(function () {});
@@ -1245,42 +1003,13 @@ _HTML_TEMPLATE = """
         } catch (e) { /* ignored -- CSS-based fallback above still applies */ }
       }
 
-      function exitFullscreen() {
-        isFullscreen = false;
-        wrapEl.classList.remove('kmn-fullscreen-mode');
-        if (fsFrameEl) {
-          fsFrameEl.style.position = '';
-          fsFrameEl.style.top = '';
-          fsFrameEl.style.left = '';
-          fsFrameEl.style.width = '';
-          fsFrameEl.style.height = '';
-          fsFrameEl.style.zIndex = '';
-          fsFrameEl.style.border = '';
-        }
-        fsButton.textContent = '⛶ Full Screen';
-        try {
-          if (document.fullscreenElement && document.exitFullscreen) {
-            document.exitFullscreen().catch(function () {});
-          }
-        } catch (e) { /* ignored */ }
-      }
-
-      fsButton.addEventListener('click', function () {
-        if (isFullscreen) { exitFullscreen(); } else { enterFullscreen(); }
-      });
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && isFullscreen) exitFullscreen();
-        else if (e.key === 'ArrowRight') step(1);
-        else if (e.key === 'ArrowLeft') step(-1);
-      });
-
-      // ---- Start-up: restore the last Zone / farm (if any), then open
-      // in Full Screen by default.
+      // ---- Start-up: restore the last Zone / farm (if any), then apply
+      // Full Screen instantly.
       buildZoneOptions();
       const savedZone = recall('kmn_zone');
       const zoneOk = savedZone && Array.prototype.some.call(zoneSelect.options, function (o) { return o.value === savedZone; });
       applyZone(zoneOk ? savedZone : ALL, zoneOk ? parseInt(recall('kmn_idx') || '0', 10) : 0);
-      enterFullscreen();
+      applyFullscreen();
 
       // Periodically reload the whole app so it pulls fresh data from the
       // Google Sheet (the chosen Zone / farm is restored afterwards); the
@@ -1300,235 +1029,6 @@ _html = (
 )
 
 components.html(_html, height=720, scrolling=False)
-
-# =========================================================================
-# "Zone wise Running Farms - Live Display" section.
-#
-# A plain (non-rotating) table below the carousel, grouped by Zone.
-# Columns: Customer Name + Farm Name with Code | Vannamei Ponds | Monodon
-# Ponds. Each pond is rendered as a small box using the same status
-# colors as the carousel above, showing that pond's DOC Today value, and
-# -- ported from the Marketing Manager app's Pond Layout cards -- a WQ
-# Special Cases icon/caption and an Issues line when either is present on
-# that pond's latest saved record.
-# =========================================================================
-def _escape_html_zw(v):
-    return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-def _zw_pond_box_color(status):
-    """Same box-color mapping as the Marketing Manager app's Pond Layout
-    section's _pond_box_color(): yellow = Partial H, green = Full H,
-    gray = Soon to be, blue = Running (default)."""
-    return {
-        "Partial H": "#fff3cd",
-        "Full H": "#d4edda",
-        "Soon to be": "#e2e2e2",
-    }.get(status, "#eaf4ff")
-
-def _render_zone_wise_pond_box(p):
-    """Renders one pond card using the EXACT same layout, fields and
-    rules as the Marketing Manager app's Pond Layout section (box color,
-    DOC Today + 'Started on' date / Full H + Harvest Date / Soon to be,
-    Total Harvest KG, Expecting Harvest / Harvest Weight, Stocking
-    Density, L.V.D, Feed/Day, ABW, Issues, species letter, and the WQ
-    Special Cases icon + caption) -- ported field-for-field from that
-    reference rather than a simplified box."""
-    status = p["status"]
-    box_color = _zw_pond_box_color(status)
-
-    wq_special_val = p["wq_special"]
-    wq_icon_html = (
-        "<div style='position:absolute;top:2px;right:4px;font-size:1.2rem;line-height:1;' "
-        "title='WQ Special Case'>🫨</div>"
-        if wq_special_val else ""
-    )
-    wq_caption_html = (
-        f"<div style='font-size:0.8rem;color:#b45309;text-align:center;max-width:190px;"
-        f"margin-top:2px;'>🫨 {_escape_html_zw(wq_special_val)}</div>"
-        if wq_special_val else ""
-    )
-
-    # ---- Stocking Density, L.V.D (this pond's own saved Date), Feed/Day,
-    # ABW -- same detail lines as the reference's pond cards.
-    density_val = pd.to_numeric(p.get("density", ""), errors="coerce")
-    density_str = f"{density_val:,.0f}" if pd.notna(density_val) else "-"
-    lvd_str = _escape_html_zw(str(p.get("lvd_date", "")).strip() or "-")
-    feed_day_str = _escape_html_zw(p.get("feed_per_day", "") or "-")
-    abw_str = _escape_html_zw(p.get("abw", "") or "-")
-    extra_details_html = (
-        "<div style='font-size:0.85rem;color:#333;text-align:left;width:100%;"
-        "padding:0 8px;margin-top:4px;line-height:1.4;'>"
-        f"<div>Stocking Density - {density_str}</div>"
-        f"<div>L.V.D - {lvd_str}</div>"
-        f"<div>Feed/Day - {feed_day_str} &nbsp;|&nbsp; ABW - {abw_str}</div>"
-        "</div>"
-    )
-
-    # ---- Issues (this pond's latest saved record), shown at the bottom
-    # of the card in red -- same as the reference.
-    issues_val = str(p.get("issues", "")).strip()
-    issues_html = (
-        "<div style='margin-top:auto;width:100%;text-align:center;font-size:0.85rem;"
-        "font-weight:bold;border-top:1px dashed #bbb;padding-top:3px;'>"
-        f"<span style='color:red;'>{_escape_html_zw(issues_val)}</span></div>"
-        if issues_val and issues_val.lower() != "nan" else ""
-    )
-
-    total_kg = p.get("total_harvest_kg", 0) or 0
-
-    if status == "Full H":
-        # Full H: "Full H" + its Harvest Date, plus Total Harvest KG
-        # (all harvests summed for this pond) instead of DOC Today.
-        h_date = str(p.get("harvest_date2", "")).strip() or str(p.get("harvest_date", "")).strip()
-        h_date = _escape_html_zw(h_date or "-")
-        total_kg_html = (
-            f"<div style='font-size:0.75rem;color:#333;'>Total: {total_kg:,.2f} KG</div>" if total_kg else ""
-        )
-        box_middle_html = (
-            "<div style='font-size:1.2rem;font-weight:bold;color:red;'>Full H</div>"
-            f"<div style='font-size:0.75rem;color:#333;'>Harvest Date - {h_date}</div>"
-            f"{total_kg_html}"
-        )
-    elif status == "Soon to be":
-        box_middle_html = "<div style='font-size:1.1rem;font-weight:bold;color:#555;'>Soon to be</div>"
-    else:
-        # Running / Partial H: DOC Today (red, large) + "Started on
-        # <date>" below it; Partial H additionally shows Total Harvest
-        # KG (Running has no harvest yet, so this stays blank for it).
-        if status == "Partial H":
-            total_kg_html = (
-                f"<div style='font-size:0.7rem;color:#333;'>Total: {total_kg:,.2f} KG</div>" if total_kg else ""
-            )
-        else:
-            total_kg_html = ""
-
-        doc_today_raw = p.get("doc_today", "")
-        doc_today_val = _escape_html_zw(doc_today_raw if doc_today_raw is not None else "-")
-        try:
-            started_date = (
-                pd.Timestamp(date.today()) - pd.Timedelta(days=int(float(doc_today_raw)))
-            ).strftime("%Y-%m-%d")
-            started_label = f"Started on {started_date}"
-        except (TypeError, ValueError):
-            started_label = "Started on ---"
-        box_middle_html = (
-            f"<div style='font-size:1.4rem;font-weight:bold;color:red;'>{doc_today_val}</div>"
-            f"<div style='font-size:0.7rem;color:#777;'>{_escape_html_zw(started_label)}</div>"
-            f"{total_kg_html}"
-        )
-
-    # ---- Expecting Harvest (KG) / Harvest Weight line -- same label
-    # switch and "2nd slot wins" rule as the reference.
-    if status == "Full H":
-        t2_lower = str(p.get("harvest_type2", "")).strip().lower()
-        kg2 = _zw_parse_harvest_kg(p.get("harvest_kg2", ""))
-        kg1 = _zw_parse_harvest_kg(p.get("harvest_kg", ""))
-        harvest_kg_val = kg2 if ("full" in t2_lower and pd.notna(kg2)) else kg1
-        expect_label = "Harvest Weight"
-        expect_val = f"{harvest_kg_val:,.2f} KG" if pd.notna(harvest_kg_val) else "-"
-    elif status == "Soon to be":
-        expect_label = "Expecting Harvest"
-        expect_val = "-"
-    else:
-        expect_label = "Expecting Harvest"
-        expect_kg = pd.to_numeric(p.get("expect_harvest_kg", ""), errors="coerce")
-        expect_val = f"{expect_kg:,.2f} KG" if pd.notna(expect_kg) else "-"
-
-    expect_html = (
-        "<div style='font-size:0.85rem;color:#333;text-align:center;width:100%;margin-top:4px;"
-        "border-top:1px dashed #bbb;padding-top:3px;'>"
-        f"<b>{expect_label}:</b> {_escape_html_zw(expect_val)}</div>"
-    )
-
-    species_label = p.get("species", "")
-    species_html = (
-        f"<div style='font-size:0.75rem;font-weight:bold;color:#444;margin-top:2px;'>{_escape_html_zw(species_label)}</div>"
-        if species_label else ""
-    )
-
-    # ---- Card shell: same 210px x 175px card, border and padding as the
-    # reference's Pond Layout cards.
-    return (
-        "<div style='display:inline-flex;flex-direction:column;align-items:center;margin:6px;vertical-align:top;'>"
-        "<div style='position:relative;width:210px;min-height:175px;border:2px solid #333;"
-        "border-radius:6px;display:flex;flex-direction:column;align-items:center;"
-        f"justify-content:flex-start;padding:8px 0;background:{box_color};'>"
-        f"{wq_icon_html}"
-        f"<div style='font-size:0.8rem;color:#555;'>Pond {_escape_html_zw(p['pond_no'])}</div>"
-        f"{box_middle_html}"
-        f"{expect_html}"
-        f"{extra_details_html}"
-        f"{issues_html}"
-        "</div>"
-        f"{species_html}"
-        f"{wq_caption_html}"
-        "</div>"
-    )
-
-def render_zone_wise_section(zone_wise_farms):
-    if not zone_wise_farms:
-        st.info("No running farms found.")
-        return
-
-    rows_html = ""
-    current_zone = None
-    for f in zone_wise_farms:
-        if f["zone"] != current_zone:
-            current_zone = f["zone"]
-            # A farm whose Customer Name / Farm Name with Code couldn't be
-            # matched against 'Customer List.xlsx' (see _farm_zone_zw()
-            # above) has no Zone -- labelled "Unassigned" here instead of
-            # a blank header, so it's still grouped and visible rather
-            # than silently disappearing from the table.
-            zone_label = current_zone if current_zone else "Unassigned"
-            rows_html += (
-                "<tr><td colspan='3' style='background:#1e293b;color:#f8fafc;font-weight:800;"
-                f"font-size:.85rem;padding:8px 14px;'>Zone: {_escape_html_zw(zone_label)}</td></tr>"
-            )
-        vannamei_html = (
-            "".join(_render_zone_wise_pond_box(p) for p in f["vannamei_ponds"])
-            or "<span style='color:#94a3b8;font-size:.85rem;'>—</span>"
-        )
-        monodon_html = (
-            "".join(_render_zone_wise_pond_box(p) for p in f["monodon_ponds"])
-            or "<span style='color:#94a3b8;font-size:.85rem;'>—</span>"
-        )
-        rows_html += (
-            "<tr>"
-            "<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;vertical-align:top;white-space:nowrap;'>"
-            f"<div style='font-weight:700;color:#0f172a;font-size:.95rem;'>{_escape_html_zw(f['farm'])}</div>"
-            f"<div style='font-size:.82rem;color:#475569;'>{_escape_html_zw(f['customer'])}</div>"
-            "</td>"
-            f"<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;'>{vannamei_html}</td>"
-            f"<td style='padding:12px 14px;border-bottom:1px solid #e2e8f0;'>{monodon_html}</td>"
-            "</tr>"
-        )
-
-    table_html = (
-        "<div style='overflow-x:auto;width:100%;'>"
-        "<table style='width:100%;border-collapse:collapse;font-family:\"Segoe UI\", Tahoma, sans-serif;'>"
-        "<thead><tr style='background:#0f172a;color:#f8fafc;'>"
-        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Customer Name / Farm Name with Code</th>"
-        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Vannamei Ponds</th>"
-        "<th style='padding:10px 14px;text-align:left;font-size:.85rem;'>Monodon Ponds</th>"
-        "</tr></thead>"
-        f"<tbody>{rows_html}</tbody>"
-        "</table></div>"
-    )
-    st.markdown(table_html, unsafe_allow_html=True)
-
-st.markdown("---")
-st.subheader("🗺️ Zone wise Running Farms — Live Display")
-zone_wise_farms = build_zone_wise_running_farms(df)
-render_zone_wise_section(zone_wise_farms)
-st.caption(
-    f"{len(zone_wise_farms)} running farm(s) shown, grouped by Zone (farms with no matching Zone in "
-    "'Customer List.xlsx' are grouped under 'Zone: Unassigned') • V/M columns list only that farm's "
-    "Vannamei / Monodon ponds • box color = pond status (blue = Running, yellow = Partial H, "
-    "green = Full H, gray = Soon to be) • each card shows DOC Today / Started on date, Expecting "
-    "Harvest or Harvest Weight, Stocking Density, L.V.D, Feed/Day, ABW, Issues and WQ Special Cases — "
-    "same fields as the Marketing Manager app's Pond Layout cards"
-)
 
 st.markdown("---")
 st.markdown(
