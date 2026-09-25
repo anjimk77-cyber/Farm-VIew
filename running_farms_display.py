@@ -53,13 +53,23 @@ from google.oauth2.service_account import Credentials
 #     recently saved "Date"), same field the Marketing Manager app's Pond
 #     Layout cards call "L.V.D", just rolled up to one date per farm here.
 #   - Added a small table per slide (Pond No / Feed Per Day / ABW /
-#     Expecting Harvest), one row per pond, using each pond's latest
-#     saved record -- same fields and "2nd harvest slot wins" Expecting
-#     Harvest rule as the Marketing Manager app's Pond Layout cards.
+#     Expecting Harvest), one row per pond -- EXCLUDING ponds at Full
+#     Harvest (fix: this table used to also list Full H ponds; those
+#     ponds are no longer relevant to feed/ABW/expecting-harvest tracking
+#     so they are left out here) -- using each pond's latest saved
+#     record, same fields and "2nd harvest slot wins" Expecting Harvest
+#     rule as the Marketing Manager app's Pond Layout cards.
 #   - Added a "Last Feed Purchased Date" + "Last Feed Order" block at the
 #     bottom of each slide (each feed item on its own line), pulled from
 #     the same Sales Details Google Sheet + "FEED" item-prefix rule the
 #     Marketing Manager app uses, filtered to that farm's Customer Code.
+#     FIX: this Customer Code lookup used to match Customer/Farm names
+#     EXACTLY against "Customer List.xlsx", but load_data() below already
+#     canonicalizes the Google Sheet's own Customer/Farm spelling (case,
+#     extra/odd spacing) before this lookup ever runs, so it was silently
+#     missing almost every farm and always falling back to "-". The
+#     lookup now matches on the same normalized key (_norm_key) used by
+#     _farm_zone() elsewhere in this file, so it actually finds the code.
 #   - Each slide's content area scrolls (the extra rows/table/feed block
 #     can make a slide taller than the screen) -- swipe/scroll down on a
 #     slide to see everything.
@@ -363,6 +373,15 @@ def _doc_today(row):
     return doc_num + (pd.Timestamp(date.today()) - parsed).days
 
 def _customer_code_lookup():
+    """Keyed by NORMALIZED (Customer Name, Farm Name with Code) -- via
+    _norm_key(), the same helper _farm_zone() already uses -- so a farm
+    still matches even when the Google Sheet's own spelling/casing/
+    spacing for that Customer/Farm (after load_data()'s own
+    canonicalization) differs slightly from 'Customer List.xlsx'.
+
+    FIX: this used to key on the raw, un-normalized names, so it almost
+    always missed and left Customer Code blank, which made every slide's
+    Last Feed Purchased Date / Last Feed Order fall back to "-"."""
     lookup = {}
     for _, row in customer_df.drop_duplicates(subset=["Customer Name", "Farm Name with Code"]).iterrows():
         code = ""
@@ -372,7 +391,7 @@ def _customer_code_lookup():
                 if val and val.lower() != "nan":
                     code = val
                     break
-        lookup[(row["Customer Name"], row["Farm Name with Code"])] = code
+        lookup[(_norm_key(row["Customer Name"]), _norm_key(row["Farm Name with Code"]))] = code
     return lookup
 
 # =========================================================================
@@ -495,13 +514,17 @@ def build_running_farms(df, last_feed_lookup=None):
             })
             # ---- Small table row: Pond No / Feed Per Day / ABW /
             # Expecting Harvest -- one row per pond, same fields the
-            # Marketing Manager app's Pond Layout cards show.
-            feed_table.append({
-                "pond_no": str(prow.get("Pond Number", "")),
-                "feed_per_day": str(prow.get("Feed Per Day", "")).strip() or "-",
-                "abw": str(prow.get("ABW", "")).strip() or "-",
-                "expect_harvest": _expecting_harvest_display(prow, status),
-            })
+            # Marketing Manager app's Pond Layout cards show. FIX: Full
+            # Harvest ponds are left out of this table -- a pond that's
+            # already fully harvested has no ongoing feed/ABW/expecting
+            # harvest to track, so it no longer gets a row here.
+            if status != "Full H":
+                feed_table.append({
+                    "pond_no": str(prow.get("Pond Number", "")),
+                    "feed_per_day": str(prow.get("Feed Per Day", "")).strip() or "-",
+                    "abw": str(prow.get("ABW", "")).strip() or "-",
+                    "expect_harvest": _expecting_harvest_display(prow, status),
+                })
 
         # ---- L.V.D for the farm = the LATEST date among this farm's own
         # ponds' individual L.V.D dates (each pond's own most recently
@@ -513,8 +536,9 @@ def build_running_farms(df, last_feed_lookup=None):
         # ---- Last Feed Purchased Date / Last Feed Order, looked up by
         # this farm's Customer Code from the Sales Details sheet. Falls
         # back to "-" / no items when there's no code, no match, or the
-        # sheet couldn't be reached.
-        code = code_lookup.get((customer, farm), "")
+        # sheet couldn't be reached. FIX: code_lookup is now matched on
+        # the normalized (customer, farm) key -- see _customer_code_lookup().
+        code = code_lookup.get((_norm_key(customer), _norm_key(farm)), "")
         last_feed_date, last_feed_items = last_feed_lookup.get(code.strip().lower(), ("-", []))
 
         farms.append({
@@ -851,7 +875,8 @@ _HTML_TEMPLATE = """
           }).join('');
 
           // ---- Small Pond No / Feed Per Day / ABW / Expecting Harvest
-          // table, one row per pond.
+          // table, one row per pond (Full H ponds already excluded when
+          // f.feed_table was built in Python).
           const feedRows = (f.feed_table || []).map(function (r) {
             return '<tr>'
               + '<td>' + escapeHtml(r.pond_no) + '</td>'
