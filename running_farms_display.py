@@ -25,6 +25,11 @@ from google.oauth2.service_account import Credentials
 #      that farm's Zone (from Customer List.xlsx), and each pond box
 #      keeps the same status colors used across this app family (blue =
 #      Running, yellow = Partial H, green = Full H, gray = Soon to be).
+#      Behind that zone tint, each slide also shows a blurred satellite
+#      snapshot of the farm's actual map location (pulled from the same
+#      Locations Google Sheet the "Farm Map" app uses). Farms with no
+#      matching location simply fall back to the zone-tint-only
+#      background.
 #      The display ALWAYS opens (and stays) in Full Screen -- there is no
 #      toggle / exit button any more, since this is a kiosk-only view.
 #      There's a Zone selector (All Zones / one Zone) and the slides move
@@ -44,32 +49,22 @@ from google.oauth2.service_account import Credentials
 #   - Full Screen is no longer a toggle: there is no "⛶ Full Screen" /
 #     "Exit Full Screen" button any more. The display applies Full Screen
 #     immediately on open and stays there -- this is the only mode.
-#   - Removed the blurred satellite background image / small "Farm
-#     Location" thumbnail entirely (no more Locations Google Sheet /
-#     ArcGIS snapshot lookups) -- slides are back to the plain zone-tint
-#     background only.
+#   - The blurred satellite background image / small "Farm Location"
+#     thumbnail stayed / is back (Locations Google Sheet + ArcGIS
+#     snapshot lookup, same as before).
 #   - Added an "L.V.D" line on each slide -- the LATEST date among that
 #     farm's own ponds' individual L.V.D dates (each pond's own most
 #     recently saved "Date"), same field the Marketing Manager app's Pond
 #     Layout cards call "L.V.D", just rolled up to one date per farm here.
 #   - Added a small table per slide (Pond No / Feed Per Day / ABW /
-#     Expecting Harvest), one row per pond -- EXCLUDING ponds at Full
-#     Harvest (fix: this table used to also list Full H ponds; those
-#     ponds are no longer relevant to feed/ABW/expecting-harvest tracking
-#     so they are left out here) -- using each pond's latest saved
-#     record, same fields and "2nd harvest slot wins" Expecting Harvest
-#     rule as the Marketing Manager app's Pond Layout cards.
+#     Expecting Harvest), one row per pond, using each pond's latest
+#     saved record -- same fields and "2nd harvest slot wins" Expecting
+#     Harvest rule as the Marketing Manager app's Pond Layout cards. Ponds
+#     whose latest record is Full Harvest are left OUT of this table.
 #   - Added a "Last Feed Purchased Date" + "Last Feed Order" block at the
 #     bottom of each slide (each feed item on its own line), pulled from
 #     the same Sales Details Google Sheet + "FEED" item-prefix rule the
 #     Marketing Manager app uses, filtered to that farm's Customer Code.
-#     FIX: this Customer Code lookup used to match Customer/Farm names
-#     EXACTLY against "Customer List.xlsx", but load_data() below already
-#     canonicalizes the Google Sheet's own Customer/Farm spelling (case,
-#     extra/odd spacing) before this lookup ever runs, so it was silently
-#     missing almost every farm and always falling back to "-". The
-#     lookup now matches on the same normalized key (_norm_key) used by
-#     _farm_zone() elsewhere in this file, so it actually finds the code.
 #   - Each slide's content area scrolls (the extra rows/table/feed block
 #     can make a slide taller than the screen) -- swipe/scroll down on a
 #     slide to see everything.
@@ -123,6 +118,28 @@ _CUSTOMER_CODE_COLUMN_CANDIDATES = [
 # Viewer or Editor) on this sheet.
 SALES_SHEET_ID = "1S3csAE-E_hN8vstuHR0KkeAN7yCVQTFe4AkEVlw4vQw"
 SALES_COLUMN_ORDER = ["Date", "Item No.", "Item Description", "Customer Code", "Quantity"]
+
+# ---- Farm location lookup (same public "Locations" Google Sheet the
+# "Farm Map" app in this family reads -- Customer ID / Customer Name /
+# Farm Name / Location, where Location is either "lat, lon" or a WKT
+# Polygon string). Used ONLY to fetch a static satellite snapshot for the
+# blurred slide background below; nothing else about this app changes.
+LOCATIONS_SHEET_ID = "1v2qTD5iUtdjFTixt9VZ1vM0dZPnyEVz4AYHtILVJi0A"
+LOCATIONS_GID = "0"
+LOCATIONS_CSV_URL = (
+    f"https://docs.google.com/spreadsheets/d/{LOCATIONS_SHEET_ID}"
+    f"/export?format=csv&gid={LOCATIONS_GID}"
+)
+# How wide an area (in degrees) to capture around each farm's point for
+# the background snapshot -- small enough to stay zoomed in on the farm,
+# large enough that panning/precision differences still land inside frame.
+MAP_BBOX_SPAN_DEG = 0.005
+MAP_IMAGE_WIDTH = 900
+MAP_IMAGE_HEIGHT = 600
+MAP_IMAGE_SIZE = f"{MAP_IMAGE_WIDTH},{MAP_IMAGE_HEIGHT}"
+# Extra padding (in degrees) added around a farm's own polygon boundary so
+# the outline isn't cropped flush against the image edge.
+MAP_POLYGON_PADDING_DEG = 0.002
 
 st.markdown("<h1 style='text-align: center;'>Shrimp FarmFlow - KMN</h1>", unsafe_allow_html=True)
 st.subheader("🎡 Running Farms — Live Display")
@@ -285,6 +302,119 @@ def build_last_feed_order_lookup(sales_df):
     return lookup
 
 # =========================================================================
+# LOAD FARM LOCATIONS (for the blurred slide background only)
+#
+# Ported from the "Farm Map" app's own loader/parser so a farm's point
+# (or polygon centroid) can be turned into a small satellite snapshot.
+# This is read-only, best-effort: if the sheet can't be reached, farms
+# just fall back to the existing zone-tint-only background -- nothing
+# else in this app is affected.
+# =========================================================================
+@st.cache_data(ttl=300, show_spinner=False)
+def load_farm_locations():
+    try:
+        loc_df = pd.read_csv(LOCATIONS_CSV_URL)
+        loc_df.columns = [c.strip() for c in loc_df.columns]
+        return loc_df
+    except Exception:
+        return pd.DataFrame(columns=["Customer ID", "Customer Name", "Farm Name", "Location"])
+
+def parse_location(location):
+    """
+    Parses the Locations sheet's Location cell in either of two formats:
+      - "lat, lon"                                    -> plain point
+      - "Polygon ((lon lat, lon lat, ...))"            -> WKT polygon ring
+    Returns (lat, lon, polygon):
+      - lat, lon: the point, or the polygon's centroid, to center the
+        snapshot on -- or (None, None) if the value can't be parsed.
+      - polygon: list of (lat, lon) tuples for the ring, if the value was
+        a WKT polygon; otherwise None. Used to zoom tight to the farm's
+        actual boundary and to draw its outline on the snapshot.
+    """
+    if not isinstance(location, str):
+        return None, None, None
+    location = location.strip()
+
+    if location.lower().startswith("polygon"):
+        coords_match = re.search(r"\(\(([^)]+)\)\)", location)
+        if not coords_match:
+            return None, None, None
+        points = []
+        for pair in coords_match.group(1).split(","):
+            parts = pair.strip().split()
+            if len(parts) != 2:
+                continue
+            try:
+                lon, lat = float(parts[0]), float(parts[1])
+                points.append((lat, lon))
+            except ValueError:
+                continue
+        if not points:
+            return None, None, None
+        avg_lat = sum(p[0] for p in points) / len(points)
+        avg_lon = sum(p[1] for p in points) / len(points)
+        return avg_lat, avg_lon, points
+
+    match = re.match(r"\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*", location)
+    if not match:
+        return None, None, None
+    return float(match.group(1)), float(match.group(2)), None
+
+def build_farm_location_lookup():
+    """Returns {customer_id_code (upper): (lat, lon, polygon_or_None)},
+    built once per (cached) Locations sheet load."""
+    loc_df = load_farm_locations()
+    lookup = {}
+    if loc_df.empty or "Location" not in loc_df.columns or "Customer ID" not in loc_df.columns:
+        return lookup
+    for _, row in loc_df.iterrows():
+        code = str(row.get("Customer ID", "")).strip().upper()
+        if not code:
+            continue
+        lat, lon, polygon = parse_location(row.get("Location", ""))
+        if lat is not None and lon is not None:
+            lookup[code] = (lat, lon, polygon)
+    return lookup
+
+def build_map_image_url(lat, lon, polygon=None):
+    """A single static satellite snapshot (no Leaflet/JS map needed) via
+    ArcGIS's MapServer 'export' endpoint. Used as a plain <img> so it can
+    be styled with a CSS filter client-side.
+
+    When a farm has an actual polygon boundary, the snapshot is zoomed to
+    that polygon's own bounding box (plus a little padding) instead of a
+    fixed-size box around its centroid -- so a large farm doesn't get
+    cropped and a small one doesn't drown in unrelated surroundings.
+    Falls back to the fixed MAP_BBOX_SPAN_DEG box for plain point
+    locations. Returns (image_url, bbox) where bbox is
+    (min_lon, min_lat, max_lon, max_lat), needed later to draw the
+    polygon outline in the exact right place on top of the image.
+    """
+    if polygon:
+        lats = [p[0] for p in polygon]
+        lons = [p[1] for p in polygon]
+        lat_span = max(lats) - min(lats)
+        lon_span = max(lons) - min(lons)
+        # Pad generously (40% of the shape's own extent on each side, with
+        # a floor for tiny/thin polygons) so the boundary sits comfortably
+        # inside the frame with breathing room, instead of touching --
+        # or nearly filling -- the image edges.
+        pad_lat = max(lat_span * 0.9, MAP_POLYGON_PADDING_DEG)
+        pad_lon = max(lon_span * 0.9, MAP_POLYGON_PADDING_DEG)
+        min_lat, max_lat = min(lats) - pad_lat, max(lats) + pad_lat
+        min_lon, max_lon = min(lons) - pad_lon, max(lons) + pad_lon
+    else:
+        min_lon, max_lon = lon - MAP_BBOX_SPAN_DEG, lon + MAP_BBOX_SPAN_DEG
+        min_lat, max_lat = lat - MAP_BBOX_SPAN_DEG, lat + MAP_BBOX_SPAN_DEG
+
+    url = (
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+        f"?bbox={min_lon},{min_lat},{max_lon},{max_lat}&bboxSR=4326&size={MAP_IMAGE_SIZE}"
+        "&format=png32&transparent=false&f=image"
+    )
+    return url, (min_lon, min_lat, max_lon, max_lat)
+
+# =========================================================================
 # HELPERS -- ported from the Marketing Manager / full manager app's Pond
 # Layout logic, kept self-contained here.
 # =========================================================================
@@ -373,15 +503,6 @@ def _doc_today(row):
     return doc_num + (pd.Timestamp(date.today()) - parsed).days
 
 def _customer_code_lookup():
-    """Keyed by NORMALIZED (Customer Name, Farm Name with Code) -- via
-    _norm_key(), the same helper _farm_zone() already uses -- so a farm
-    still matches even when the Google Sheet's own spelling/casing/
-    spacing for that Customer/Farm (after load_data()'s own
-    canonicalization) differs slightly from 'Customer List.xlsx'.
-
-    FIX: this used to key on the raw, un-normalized names, so it almost
-    always missed and left Customer Code blank, which made every slide's
-    Last Feed Purchased Date / Last Feed Order fall back to "-"."""
     lookup = {}
     for _, row in customer_df.drop_duplicates(subset=["Customer Name", "Farm Name with Code"]).iterrows():
         code = ""
@@ -391,7 +512,7 @@ def _customer_code_lookup():
                 if val and val.lower() != "nan":
                     code = val
                     break
-        lookup[(_norm_key(row["Customer Name"]), _norm_key(row["Farm Name with Code"]))] = code
+        lookup[(row["Customer Name"], row["Farm Name with Code"])] = code
     return lookup
 
 # =========================================================================
@@ -477,9 +598,11 @@ def build_running_farms(df, last_feed_lookup=None):
     ]
     zone_colors = build_zone_colors(zones_seen)
 
-    # Customer Code lookup, used only to look up each farm's "Last Feed
-    # Purchased Date" / "Last Feed Order" in last_feed_lookup below.
+    # Customer Code lookup, used both for the map background image below
+    # and to look up each farm's "Last Feed Purchased Date" / "Last Feed
+    # Order" in last_feed_lookup below.
     code_lookup = _customer_code_lookup()
+    farm_location_lookup = build_farm_location_lookup()
 
     farms = []
     for (customer, farm), group in latest_per_pond.groupby(["Customer", "Farm Name with Code"]):
@@ -514,10 +637,9 @@ def build_running_farms(df, last_feed_lookup=None):
             })
             # ---- Small table row: Pond No / Feed Per Day / ABW /
             # Expecting Harvest -- one row per pond, same fields the
-            # Marketing Manager app's Pond Layout cards show. FIX: Full
-            # Harvest ponds are left out of this table -- a pond that's
-            # already fully harvested has no ongoing feed/ABW/expecting
-            # harvest to track, so it no longer gets a row here.
+            # Marketing Manager app's Pond Layout cards show. Ponds
+            # already at Full Harvest are left OUT of this table (they
+            # have no more feed/ABW/expecting-harvest to track).
             if status != "Full H":
                 feed_table.append({
                     "pond_no": str(prow.get("Pond Number", "")),
@@ -525,6 +647,23 @@ def build_running_farms(df, last_feed_lookup=None):
                     "abw": str(prow.get("ABW", "")).strip() or "-",
                     "expect_harvest": _expecting_harvest_display(prow, status),
                 })
+
+        # Resolve this farm's map background image, if a matching
+        # location exists. Failure here (no code, no match, bad coords)
+        # just leaves map_image empty and the slide falls back to the
+        # existing zone-tint-only background. When the location is a
+        # polygon, also keep the polygon points + the exact bbox used for
+        # the snapshot so the JS side can draw the boundary outline in
+        # the right spot on top of the image.
+        code = code_lookup.get((customer, farm), "")
+        map_image, map_bbox, map_polygon = "", None, None
+        if code:
+            loc = farm_location_lookup.get(code.upper())
+            if loc:
+                lat, lon, polygon = loc
+                map_image, bbox = build_map_image_url(lat, lon, polygon)
+                map_bbox = list(bbox)
+                map_polygon = [[p[0], p[1]] for p in polygon] if polygon else None
 
         # ---- L.V.D for the farm = the LATEST date among this farm's own
         # ponds' individual L.V.D dates (each pond's own most recently
@@ -536,9 +675,7 @@ def build_running_farms(df, last_feed_lookup=None):
         # ---- Last Feed Purchased Date / Last Feed Order, looked up by
         # this farm's Customer Code from the Sales Details sheet. Falls
         # back to "-" / no items when there's no code, no match, or the
-        # sheet couldn't be reached. FIX: code_lookup is now matched on
-        # the normalized (customer, farm) key -- see _customer_code_lookup().
-        code = code_lookup.get((_norm_key(customer), _norm_key(farm)), "")
+        # sheet couldn't be reached.
         last_feed_date, last_feed_items = last_feed_lookup.get(code.strip().lower(), ("-", []))
 
         farms.append({
@@ -547,6 +684,9 @@ def build_running_farms(df, last_feed_lookup=None):
             "zone": zone,
             "zone_color": zone_colors.get(zone, "#2563eb"),
             "ponds": ponds,
+            "map_image": map_image,
+            "map_bbox": map_bbox,
+            "map_polygon": map_polygon,
             "lvd": lvd,
             "feed_table": feed_table,
             "last_feed_date": last_feed_date if last_feed_date and last_feed_date != "nan" else "-",
@@ -621,7 +761,18 @@ _HTML_TEMPLATE = """
     /* used when going Back, so the incoming slide enters from the left */
     .kmn-slide.from-left { transform: translateX(-100%); transition: none; }
 
-    /* ---- the zone-colored gradient background for each slide. */
+    /* ---- blurred farm-location snapshot sitting behind the zone tint +
+       content of each slide. Sized slightly larger than the slide
+       (inset:-20px) so the blur's soft edge never shows a lighter halo
+       at the slide's border. Slides with no matching location simply
+       never get this element (see JS below). */
+    .kmn-slide-mapbg {
+      position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px);
+      object-fit: cover; filter: brightness(.85) saturate(1.15);
+      z-index: 0;
+    }
+    /* ---- the zone-colored gradient, drawn as its own layer on top of
+       the blurred map so the map shows through. */
     .kmn-slide-tint { position: absolute; inset: 0; z-index: 1; }
     /* ---- wraps the farm header + pond grid so it always sits above both
        background layers. overflow-y:auto so a farm with many ponds can be
@@ -700,6 +851,15 @@ _HTML_TEMPLATE = """
     .kmn-last-feed-date { font-size: .85rem; font-weight: 800; color: #f8fafc; }
     .kmn-last-feed-title { font-size: .85rem; font-weight: 800; color: #f8fafc; margin-top: 8px; }
     .kmn-last-feed-item { font-size: .8rem; color: #e2e8f0; margin-top: 3px; }
+    /* ---- small, sharp "exact location" thumbnail shown after the Pond
+       Layout grid -- distinct from the dimmed full-slide background
+       image above. */
+    .kmn-location-thumb-wrap { margin-top: 14px; display: flex; flex-direction: column; align-items: center; }
+    .kmn-location-thumb {
+      width: 220px; height: 150px; object-fit: cover; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,.35); box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    }
+    .kmn-location-caption { margin-top: 5px; font-size: .75rem; color: #e2e8f0; font-weight: 600; }
     .kmn-empty { color: #94a3b8; font-size: 1.2rem; margin-top: 60px; text-align: center; }
     .kmn-dots { position: absolute; bottom: 8px; left: 0; right: 0; display: flex; justify-content: center; gap: 7px; z-index: 3; pointer-events: none; }
     .kmn-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.28); transition: background .3s; }
@@ -724,6 +884,7 @@ _HTML_TEMPLATE = """
        no toggle button and no exit. */
     #kmn-wrap.kmn-fullscreen-mode {
        position: fixed; inset: 0; z-index: 999999;
+       min-height: 100vh; min-height: 100dvh; /* fallback in case the outer iframe never actually got resized */
        /* extra bottom padding keeps the Back / Next bar above the floating badges that
           Streamlit Cloud draws over the bottom-right corner of the page */
        background: #0b1220; padding: 10px 10px 68px; box-sizing: border-box; align-items: center;
@@ -744,6 +905,7 @@ _HTML_TEMPLATE = """
       .kmn-customer-name { font-size: .95rem; }
       .kmn-pond-grid { gap: 10px; }
       .kmn-feed-table-wrap, .kmn-last-feed-wrap { max-width: 100%; }
+      .kmn-location-thumb { width: 180px; height: 120px; }
       #kmn-carousel { height: 520px; }
       /* Zone + Customer dropdowns share one row on phones */
       #kmn-zone-select, #kmn-customer-select { max-width: none; width: 100%; min-width: 0; flex: 1; }
@@ -875,8 +1037,7 @@ _HTML_TEMPLATE = """
           }).join('');
 
           // ---- Small Pond No / Feed Per Day / ABW / Expecting Harvest
-          // table, one row per pond (Full H ponds already excluded when
-          // f.feed_table was built in Python).
+          // table, one row per pond (Full Harvest ponds excluded).
           const feedRows = (f.feed_table || []).map(function (r) {
             return '<tr>'
               + '<td>' + escapeHtml(r.pond_no) + '</td>'
@@ -908,7 +1069,26 @@ _HTML_TEMPLATE = """
             + lastFeedItemsHtml
             + '</div>';
 
+          // Only add the blurred map <img> when this farm actually
+          // resolved a location -- farms with no match keep exactly the
+          // zone-tint-only background. onerror hides it gracefully if
+          // the snapshot URL ever fails to load.
+          const mapBgHtml = f.map_image
+            ? '<img class="kmn-slide-mapbg" src="' + f.map_image + '" alt="" onerror="this.remove();" />'
+            : '';
+
+          // A small, sharp "exact location" thumbnail shown after the
+          // Pond Layout grid -- separate from the dimmed full-slide
+          // background above, and only added when a location was found.
+          const locationThumbHtml = f.map_image
+            ? '<div class="kmn-location-thumb-wrap">'
+              + '<img class="kmn-location-thumb" src="' + f.map_image + '" alt="Farm location" onerror="this.parentElement.remove();" />'
+              + '<div class="kmn-location-caption">📍 Farm Location</div>'
+              + '</div>'
+            : '';
+
           return '<div class="kmn-slide' + (i === current ? ' active' : '') + '" data-index="' + i + '">'
+            + mapBgHtml
             + '<div class="kmn-slide-tint" style="background:' + zoneSlideBackground(f.zone_color) + ';"></div>'
             + '<div class="kmn-slide-content">'
             + '<div class="kmn-slide-header">'
@@ -920,6 +1100,7 @@ _HTML_TEMPLATE = """
             + '<div class="kmn-pond-grid">' + ponds + '</div>'
             + feedTableHtml
             + lastFeedHtml
+            + locationThumbHtml
             + '</div>'
             + '</div>';
         }).join('');
@@ -1044,9 +1225,19 @@ _HTML_TEMPLATE = """
       // page opens. A best-effort attempt at the browser's native
       // Fullscreen API is made too (browsers usually only allow that
       // after a tap/click, so the CSS-based full screen above is what
-      // actually applies on open).
+      // actually applies on open). Re-applied on resize/orientation
+      // change and a few times right after load, since on some mobile
+      // browsers window.frameElement isn't available yet on the very
+      // first call, or the browser's own address-bar show/hide changes
+      // the visible viewport height without re-firing our code -- both
+      // of which could otherwise leave the component looking like it
+      // "lost" its full-screen sizing (e.g. after tapping Next, a taller
+      // farm's content sitting outside what actually got resized).
       function applyFullscreen() {
         wrapEl.classList.add('kmn-fullscreen-mode');
+        if (!fsFrameEl) {
+          try { fsFrameEl = window.frameElement; } catch (e) { fsFrameEl = null; }
+        }
         if (fsFrameEl) {
           fsFrameEl.style.position = 'fixed';
           fsFrameEl.style.top = '0';
@@ -1063,6 +1254,12 @@ _HTML_TEMPLATE = """
           }
         } catch (e) { /* ignored -- CSS-based fallback above still applies */ }
       }
+
+      window.addEventListener('resize', applyFullscreen);
+      window.addEventListener('orientationchange', applyFullscreen);
+      // A few retries shortly after load -- covers mobile browsers where
+      // window.frameElement isn't reachable yet on the very first call.
+      [300, 1000, 2500].forEach(function (delay) { setTimeout(applyFullscreen, delay); });
 
       // ---- Start-up: restore the last Zone / farm (if any), then apply
       // Full Screen instantly.
@@ -1089,7 +1286,7 @@ _html = (
     .replace("__DATA_REFRESH_SECONDS__", json.dumps(DATA_REFRESH_SECONDS))
 )
 
-components.html(_html, height=720, scrolling=False)
+components.html(_html, height=760, scrolling=True)
 
 st.markdown("---")
 st.markdown(
