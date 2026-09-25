@@ -81,6 +81,44 @@ from google.oauth2.service_account import Credentials
 # =========================================================================
 st.set_page_config(page_title="Running Shrimp Farms - KMN", layout="wide", page_icon="🎡")
 
+# =========================================================================
+# KIOSK / TRUE FULL SCREEN FIX
+#
+# The carousel's own JS (further down) only expanded its own <div> inside
+# the iframe that components.html renders -- it never touched Streamlit's
+# own header/menu/footer, or the SIZE of that iframe itself. So opening
+# the link showed the normal Streamlit page (title, subheader, "Refresh
+# Now" button, Streamlit's own toolbar) with the carousel just sitting in
+# its ordinary ~720px box -- not real edge-to-edge full screen.
+#
+# This CSS runs in the OUTER page (st.markdown is not sandboxed the way
+# components.html's iframe is), so it isn't affected by any iframe
+# sandboxing: it hides Streamlit's chrome, and forces the page's iframe
+# (there's only the one, from the components.html call below) to cover
+# the entire browser viewport, above everything else.
+# =========================================================================
+st.markdown("""
+<style>
+#MainMenu, header[data-testid="stHeader"], footer,
+div[data-testid="stToolbar"], div[data-testid="stDecoration"],
+div[data-testid="stStatusWidget"] {
+    display: none !important;
+}
+html, body, .stApp {
+    background: #0b1220 !important;
+    overflow: hidden !important;
+}
+iframe {
+    position: fixed !important;
+    top: 0 !important; left: 0 !important;
+    width: 100vw !important; height: 100vh !important;
+    height: 100dvh !important;
+    z-index: 999999 !important;
+    border: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 CUSTOMER_FILE = "Customer List.xlsx"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
